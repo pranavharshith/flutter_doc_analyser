@@ -1,0 +1,48 @@
+name: vortex_dashboard
+description: A Flutter app for Vortex Dashboard
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  firebase_auth: ^5.5.4
+  firebase_core: ^3.13.1
+  cloud_firestore: ^5.6.8
+  shared_preferences: ^2.5.3
+  intl_phone_field: ^3.2.0
+  intl: ^0.20.2
+  image_picker: ^1.1.2
+  file_picker: ^8.1.2
+  google_mlkit_text_recognition: ^0.15.0
+  fluttertoast: ^8.2.12
+  path_provider: ^2.1.5  # Added for local file storage
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.3
+  flutter_native_splash: ^2.4.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/vortex_icon.jpg
+    - assets/vortex_splash.png
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/vortex_icon.jpg"
+
+flutter_native_splash:
+  color: "#FFFFFF"
+  image: assets/vortex_splash.png
+  android: true
+  ios: true
