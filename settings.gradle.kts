@@ -14,7 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "my_app"
+rootProject.name = "our_app"
 include(":app")
 
 // This settings file was created by the Flutter tool

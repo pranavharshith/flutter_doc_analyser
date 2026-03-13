@@ -73,6 +73,7 @@ class _AdminTrashScreenState extends State<AdminTrashScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -100,11 +101,13 @@ class _AdminTrashScreenState extends State<AdminTrashScreen> {
         ),
       ),
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFFFFFFFF), Color(0xFFF5F7FA)],
+            colors: isDarkMode
+                ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
+                : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
           ),
         ),
         child: SafeArea(
@@ -122,20 +125,27 @@ class _AdminTrashScreenState extends State<AdminTrashScreen> {
                   child: Container(
                     margin: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFFFFFFF).withOpacity(0.9),
+                      color: isDarkMode
+                          ? const Color(0xFF2A3A5A)
+                          : const Color(0xFFFFFFFF).withOpacity(0.9),
                       borderRadius: BorderRadius.circular(10),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
+                          color: Colors.black.withOpacity(isDarkMode ? 0.3 : 0.1),
                           blurRadius: 10,
                           offset: const Offset(0, 5),
                         ),
                       ],
                     ),
                     padding: const EdgeInsets.all(20),
-                    child: const Text(
+                    child: Text(
                       "Trash is empty.",
-                      style: TextStyle(color: Color(0xFF1B263B), fontSize: 18),
+                      style: TextStyle(
+                        color: isDarkMode
+                            ? const Color(0xFFFFFFFF)
+                            : const Color(0xFF1B263B),
+                        fontSize: 18,
+                      ),
                     ),
                   ),
                 );
@@ -172,20 +182,27 @@ class _AdminTrashScreenState extends State<AdminTrashScreen> {
                   child: Container(
                     margin: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFFFFFFF).withOpacity(0.9),
+                      color: isDarkMode
+                          ? const Color(0xFF2A3A5A)
+                          : const Color(0xFFFFFFFF).withOpacity(0.9),
                       borderRadius: BorderRadius.circular(10),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
+                          color: Colors.black.withOpacity(isDarkMode ? 0.3 : 0.1),
                           blurRadius: 10,
                           offset: const Offset(0, 5),
                         ),
                       ],
                     ),
                     padding: const EdgeInsets.all(20),
-                    child: const Text(
+                    child: Text(
                       "Trash is empty.",
-                      style: TextStyle(color: Color(0xFF1B263B), fontSize: 18),
+                      style: TextStyle(
+                        color: isDarkMode
+                            ? const Color(0xFFFFFFFF)
+                            : const Color(0xFF1B263B),
+                        fontSize: 18,
+                      ),
                     ),
                   ),
                 );
@@ -209,16 +226,18 @@ class _AdminTrashScreenState extends State<AdminTrashScreen> {
                           : 15;
 
                   return Card(
-                    color: const Color(0xFFFFFFFF),
+                    color: isDarkMode
+                        ? const Color(0xFF2A3A5A)
+                        : const Color(0xFFFFFFFF),
                     elevation: 2,
                     margin: const EdgeInsets.only(bottom: 12),
                     child: ListTile(
                       leading: const Icon(Icons.delete, color: Colors.grey),
                       title: Text(
                         notification['message'] ?? 'No message',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontWeight: FontWeight.bold,
-                          color: Colors.black,
+                          color: isDarkMode ? Colors.white : Colors.black,
                         ),
                       ),
                       subtitle: Column(
@@ -226,7 +245,9 @@ class _AdminTrashScreenState extends State<AdminTrashScreen> {
                         children: [
                           Text(
                             notification['documentType'] ?? '',
-                            style: const TextStyle(color: Colors.grey),
+                            style: TextStyle(
+                              color: isDarkMode ? Colors.white70 : Colors.grey,
+                            ),
                           ),
                           Text(
                             'Will be deleted in $daysLeft day${daysLeft != 1 ? 's' : ''}',
@@ -256,10 +277,29 @@ class _AdminTrashScreenState extends State<AdminTrashScreen> {
                               Icons.delete_forever,
                               color: Colors.red,
                             ),
-                            onPressed:
-                                () => _permanentlyDeleteNotification(
-                                  notificationId,
+                            onPressed: () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Delete Permanently?'),
+                                  content: const Text('This action cannot be undone. Are you sure?'),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, false),
+                                      child: const Text('Cancel'),
+                                    ),
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx, true),
+                                      child: const Text('Delete', style: TextStyle(color: Colors.red)),
+                                    ),
+                                  ],
                                 ),
+                              );
+                              
+                              if (confirm == true && mounted) {
+                                _permanentlyDeleteNotification(notificationId);
+                              }
+                            },
                           ),
                         ],
                       ),

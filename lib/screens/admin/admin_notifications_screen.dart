@@ -3,9 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 class AdminNotificationsScreen extends StatefulWidget {
-  final bool isDarkMode;
-
-  const AdminNotificationsScreen({super.key, required this.isDarkMode});
+  const AdminNotificationsScreen({super.key});
 
   @override
   _AdminNotificationsScreenState createState() =>
@@ -13,6 +11,8 @@ class AdminNotificationsScreen extends StatefulWidget {
 }
 
 class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
+  final Set<String> _pendingDeleteIds = <String>{};
+
   // Stream to fetch unread notifications count for admin
   Stream<int> _getUnreadNotificationsCount() {
     return FirebaseFirestore.instance
@@ -20,6 +20,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
         .doc('admin')
         .collection('adminNotifications')
         .where('isRead', isEqualTo: false)
+        .limit(11)
         .snapshots()
         .map((snapshot) => snapshot.docs.length);
   }
@@ -30,6 +31,12 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
     Map<String, dynamic> notificationData,
   ) async {
     try {
+      if (mounted) {
+        setState(() {
+          _pendingDeleteIds.add(notificationId);
+        });
+      }
+
       // Add to trash with deletedAt timestamp
       await FirebaseFirestore.instance
           .collection('notifications')
@@ -49,18 +56,29 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
           .doc(notificationId)
           .delete();
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Notification moved to trash')),
-      );
+      if (mounted) {
+        setState(() {
+          _pendingDeleteIds.remove(notificationId);
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Notification moved to trash')),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error moving to trash: $e')));
+      if (mounted) {
+        setState(() {
+          _pendingDeleteIds.remove(notificationId);
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error moving to trash: $e')));
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       return const Scaffold(body: Center(child: Text('User not logged in')));
@@ -73,7 +91,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors:
-                widget.isDarkMode
+                isDarkMode
                     ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
                     : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
           ),
@@ -90,6 +108,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
                           .doc('admin')
                           .collection('adminNotifications')
                           .orderBy('timestamp', descending: true)
+                          .limit(100)
                           .snapshots(),
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
@@ -104,94 +123,116 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
                       );
                     }
 
-                    final notifications = snapshot.data!.docs;
+                    final notifications = snapshot.data!.docs
+                        .where((d) => !_pendingDeleteIds.contains(d.id))
+                        .toList();
 
-                    return ListView.builder(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: notifications.length,
-                      itemBuilder: (context, index) {
-                        final notification =
-                            notifications[index].data() as Map<String, dynamic>;
-                        final notificationId = notifications[index].id;
-                        final isRead = notification['isRead'] ?? false;
+                    Future<void> onRefresh() async {
+                      await FirebaseFirestore.instance
+                          .collection('notifications')
+                          .doc('admin')
+                          .collection('adminNotifications')
+                          .orderBy('timestamp', descending: true)
+                          .limit(100)
+                          .get();
+                    }
 
-                        return Card(
-                          color:
-                              widget.isDarkMode
-                                  ? const Color(0xFF2A3A5A)
-                                  : const Color(0xFFFFFFFF),
-                          elevation: 2,
-                          margin: const EdgeInsets.only(bottom: 12),
-                          child: ListTile(
-                            tileColor: isRead ? null : Colors.blueGrey[50],
-                            leading: Icon(
-                              Icons.notifications,
-                              color: isRead ? Colors.grey : Colors.blue,
-                            ),
-                            title: Text(
-                              notification['message'] ?? 'No message',
-                              style: TextStyle(
-                                fontWeight:
-                                    isRead
-                                        ? FontWeight.normal
-                                        : FontWeight.bold,
-                                color:
-                                    widget.isDarkMode
-                                        ? Colors.white
-                                        : Colors.black,
+                    return RefreshIndicator(
+                      onRefresh: onRefresh,
+                      color: const Color(0xFF415A77),
+                      child: ListView.builder(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.all(16),
+                        itemCount: notifications.length,
+                        itemBuilder: (context, index) {
+                          final notification =
+                              notifications[index].data() as Map<String, dynamic>;
+                          final notificationId = notifications[index].id;
+                          final isRead = notification['isRead'] ?? false;
+
+                          return Card(
+                            key: ValueKey(notificationId),
+                            color:
+                                isDarkMode
+                                    ? const Color(0xFF2A3A5A)
+                                    : const Color(0xFFFFFFFF),
+                            elevation: 2,
+                            margin: const EdgeInsets.only(bottom: 12),
+                            child: ListTile(
+                              tileColor: isRead
+                                  ? null
+                                  : (isDarkMode
+                                      ? const Color(0xFF1B263B)
+                                      : Colors.blueGrey[50]),
+                              leading: Icon(
+                                Icons.notifications,
+                                color: isRead ? Colors.grey : Colors.blue,
                               ),
-                            ),
-                            subtitle: Text(
-                              notification['documentType'] ?? '',
-                              style: TextStyle(
-                                color:
-                                    widget.isDarkMode
-                                        ? Colors.white70
-                                        : Colors.grey,
+                              title: Text(
+                                notification['message'] ?? 'No message',
+                                style: TextStyle(
+                                  fontWeight:
+                                      isRead
+                                          ? FontWeight.normal
+                                          : FontWeight.bold,
+                                  color:
+                                      isDarkMode
+                                          ? Colors.white
+                                          : Colors.black,
+                                ),
                               ),
-                            ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  notification['timestamp'] != null
-                                      ? DateTime.fromMillisecondsSinceEpoch(
-                                        notification['timestamp']
-                                            .millisecondsSinceEpoch,
-                                      ).toLocal().toString().split('.')[0]
-                                      : 'Unknown time',
-                                  style: TextStyle(
-                                    color:
-                                        widget.isDarkMode
-                                            ? Colors.white70
-                                            : Colors.grey,
-                                    fontSize: 12,
-                                  ),
+                              subtitle: Text(
+                                notification['documentType'] ?? '',
+                                style: TextStyle(
+                                  color:
+                                      isDarkMode
+                                          ? Colors.white70
+                                          : Colors.grey,
                                 ),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.delete,
-                                    color: Colors.red,
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    notification['timestamp'] != null
+                                        ? DateTime.fromMillisecondsSinceEpoch(
+                                          notification['timestamp']
+                                              .millisecondsSinceEpoch,
+                                        ).toLocal().toString().split('.')[0]
+                                        : 'Unknown time',
+                                    style: TextStyle(
+                                      color:
+                                          isDarkMode
+                                              ? Colors.white70
+                                              : Colors.grey,
+                                      fontSize: 12,
+                                    ),
                                   ),
-                                  onPressed:
-                                      () => _moveToTrash(
-                                        notificationId,
-                                        notification,
-                                      ),
-                                ),
-                              ],
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete,
+                                      color: Colors.red,
+                                    ),
+                                    onPressed:
+                                        () => _moveToTrash(
+                                          notificationId,
+                                          notification,
+                                        ),
+                                  ),
+                                ],
+                              ),
+                              onTap: () async {
+                                await FirebaseFirestore.instance
+                                    .collection('notifications')
+                                    .doc('admin')
+                                    .collection('adminNotifications')
+                                    .doc(notificationId)
+                                    .update({'isRead': true});
+                              },
                             ),
-                            onTap: () async {
-                              await FirebaseFirestore.instance
-                                  .collection('notifications')
-                                  .doc('admin')
-                                  .collection('adminNotifications')
-                                  .doc(notificationId)
-                                  .update({'isRead': true});
-                            },
-                          ),
-                        );
-                      },
+                          );
+                        },
+                      ),
                     );
                   },
                 ),

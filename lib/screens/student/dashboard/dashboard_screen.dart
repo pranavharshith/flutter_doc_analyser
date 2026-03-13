@@ -40,7 +40,8 @@ class _StudentDashboardState extends State<StudentDashboard> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('hasSubmittedDetails');
     await FirebaseAuth.instance.signOut();
-    Navigator.pushReplacement(
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(
         builder: (context) => AuthPage(
@@ -48,13 +49,14 @@ class _StudentDashboardState extends State<StudentDashboard> {
           isDarkMode: widget.isDarkMode,
         ),
       ),
+      (route) => false,
     );
   }
 
   Widget _getPage(int index) {
     switch (index) {
       case 0:
-        return DashboardContent();
+        return DashboardContent(onNavigateToUploads: () => _onItemTapped(1));
       case 1:
         return DocumentUploadScreen(
           toggleDarkMode: widget.toggleDarkMode,
@@ -64,7 +66,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
       case 2:
         return const NotificationsScreen();
       default:
-        return DashboardContent();
+        return DashboardContent(onNavigateToUploads: () => _onItemTapped(1));
     }
   }
 
@@ -84,13 +86,18 @@ class _StudentDashboardState extends State<StudentDashboard> {
 
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
       key: _scaffoldKey,
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        title: const Text(
-          "Student Dashboard",
-          style: TextStyle(
+        title: Text(
+          _selectedIndex == 0
+              ? "Dashboard"
+              : _selectedIndex == 1
+                  ? "Upload Documents"
+                  : "Notifications",
+          style: const TextStyle(
             fontWeight: FontWeight.bold,
             color: Color(0xFFFFFFFF),
           ),
@@ -116,7 +123,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
         actions: [
           IconButton(
             icon: Icon(
-              widget.isDarkMode ? Icons.light_mode : Icons.dark_mode,
+              isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
               color: const Color(0xFFFFFFFF),
             ),
             tooltip: "Toggle Theme",
@@ -147,14 +154,14 @@ class _StudentDashboardState extends State<StudentDashboard> {
                 child: ListTile(
                   leading: Icon(
                     Icons.person,
-                    color: widget.isDarkMode
+                    color: isDarkMode
                         ? const Color(0xFFB0C4DE)
                         : const Color(0xFF415A77),
                   ),
                   title: Text(
                     "Profile",
                     style: TextStyle(
-                      color: widget.isDarkMode
+                      color: isDarkMode
                           ? const Color(0xFFFFFFFF)
                           : const Color(0xFF1B263B),
                     ),
@@ -180,7 +187,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
               padding: const EdgeInsets.only(right: 16.0),
               child: ProfileImageWidget(
                 radius: 20, // Matches the default CircleAvatar size
-                isDarkMode: widget.isDarkMode,
+                isDarkMode: isDarkMode,
               ),
             ),
           ),
@@ -195,7 +202,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: widget.isDarkMode
+              colors: isDarkMode
                   ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
                   : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
             ),
@@ -214,7 +221,7 @@ class _StudentDashboardState extends State<StudentDashboard> {
                   children: [
                     ProfileImageWidget(
                       radius: 40, // Larger size for the DrawerHeader
-                      isDarkMode: widget.isDarkMode,
+                      isDarkMode: isDarkMode,
                     ),
                     const SizedBox(height: 12),
                     const Text(
@@ -231,27 +238,27 @@ class _StudentDashboardState extends State<StudentDashboard> {
               _drawerItem(Icons.help, "FAQ", () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => FAQScreen()),
+                  MaterialPageRoute(builder: (context) => FAQScreen(isDarkMode: isDarkMode)),
                 );
-              }, widget.isDarkMode),
+              }, isDarkMode),
               _drawerItem(Icons.delete_outline, "Trash", () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => TrashScreen()),
+                  MaterialPageRoute(builder: (context) => TrashScreen(isDarkMode: isDarkMode)),
                 );
-              }, widget.isDarkMode),
+              }, isDarkMode),
               _drawerItem(Icons.contact_support, "Help", () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => HelpScreen()),
+                  MaterialPageRoute(builder: (context) => HelpScreen(isDarkMode: isDarkMode)),
                 );
-              }, widget.isDarkMode),
+              }, isDarkMode),
               const Divider(),
               _drawerItem(
                 Icons.logout,
                 "Logout",
                 _signOut,
-                widget.isDarkMode,
+                isDarkMode,
                 color: const Color(0xFFEF4444),
               ),
             ],
@@ -266,10 +273,10 @@ class _StudentDashboardState extends State<StudentDashboard> {
           return BottomNavigationBar(
             currentIndex: _selectedIndex,
             selectedItemColor: const Color(0xFF415A77),
-            unselectedItemColor: widget.isDarkMode
+            unselectedItemColor: isDarkMode
                 ? const Color(0xFFB0C4DE)
                 : const Color(0xFF6B7280),
-            backgroundColor: widget.isDarkMode
+            backgroundColor: isDarkMode
                 ? const Color(0xFF1B263B)
                 : const Color(0xFFF5F7FA),
             onTap: _onItemTapped,

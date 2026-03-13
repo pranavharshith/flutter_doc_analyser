@@ -7,7 +7,8 @@ class NotificationModel {
   final String userId;
   final String userName;
   final Timestamp timestamp;
-  final String type; // 'user' or 'admin'
+  final String type; // 'user', 'admin', or 'reupload'
+  final bool isRead; // FIX: was missing from previous model
 
   NotificationModel({
     required this.id,
@@ -17,6 +18,7 @@ class NotificationModel {
     required this.userName,
     required this.timestamp,
     required this.type,
+    this.isRead = false,
   });
 
   factory NotificationModel.fromMap(Map<String, dynamic> map, String id) {
@@ -28,6 +30,7 @@ class NotificationModel {
       userName: map['userName'] ?? '',
       timestamp: map['timestamp'] ?? Timestamp.now(),
       type: map['type'] ?? 'user',
+      isRead: map['isRead'] ?? false, // FIX: now typed
     );
   }
 
@@ -39,6 +42,20 @@ class NotificationModel {
       'userName': userName,
       'timestamp': timestamp,
       'type': type,
+      'isRead': isRead,
     };
+  }
+
+  NotificationModel copyWith({bool? isRead}) {
+    return NotificationModel(
+      id: id,
+      message: message,
+      documentType: documentType,
+      userId: userId,
+      userName: userName,
+      timestamp: timestamp,
+      type: type,
+      isRead: isRead ?? this.isRead,
+    );
   }
 }

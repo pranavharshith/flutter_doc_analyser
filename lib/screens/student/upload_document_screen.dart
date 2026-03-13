@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
@@ -7,6 +8,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:fluttertoast/fluttertoast.dart';
+import '/services/storage_service.dart'; // FIX: actual file upload
 
 class UploadDocumentScreen extends StatefulWidget {
   final String title;
@@ -29,6 +31,8 @@ class UploadDocumentScreen extends StatefulWidget {
 }
 
 class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
+  bool get _isDarkMode => Theme.of(context).brightness == Brightness.dark;
+
   String? selectedFileName;
   File? selectedImage;
   Uint8List? webImageBytes;
@@ -39,6 +43,11 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
   Map<String, dynamic> comparisonResults = {};
   bool isVerified = false;
   double overallSimilarity = 0.0;
+
+  // OCR bounding-box data saved to Firestore for admin preview highlights
+  List<Map<String, dynamic>> _ocrBlocks = [];
+  double _imageWidth = 0;
+  double _imageHeight = 0;
 
   final TextRecognizer _textRecognizer = TextRecognizer();
 
@@ -179,16 +188,45 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
       isProcessing = true;
       extractedText = '';
       comparisonResults.clear();
+      _ocrBlocks = [];
     });
 
     try {
+      // Decode image to get pixel dimensions for normalised bounding boxes
+      final bytes = await image.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final imgWidth = frame.image.width.toDouble();
+      final imgHeight = frame.image.height.toDouble();
+      frame.image.dispose();
+
       final inputImage = InputImage.fromFilePath(image.path);
       final RecognizedText recognizedText = await _textRecognizer.processImage(
         inputImage,
       );
       String text = recognizedText.text;
 
+      // Collect normalised bounding boxes for all text blocks
+      final blocks = <Map<String, dynamic>>[];
+      if (imgWidth > 0 && imgHeight > 0) {
+        for (final block in recognizedText.blocks) {
+          final r = block.boundingBox;
+          if (r != null) {
+            blocks.add({
+              'text': block.text,
+              'left': r.left / imgWidth,
+              'top': r.top / imgHeight,
+              'width': r.width / imgWidth,
+              'height': r.height / imgHeight,
+            });
+          }
+        }
+      }
+
       setState(() {
+        _imageWidth = imgWidth;
+        _imageHeight = imgHeight;
+        _ocrBlocks = blocks;
         extractedText = text.isNotEmpty ? text : 'No text found';
         comparisonResults = _compareTextWithExpected(text);
 
@@ -304,15 +342,23 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
           break;
         case 'Voter ID':
           if (key == 'voterId') {
-            final voterIdPattern = RegExp(r'\b\d{10,12}\b');
-            if (voterIdPattern.hasMatch(ocrText)) {
-              final extractedVoterId =
-                  voterIdPattern.firstMatch(ocrText)?.group(0) ?? '';
-              exactMatch = extractedVoterId == formattedValue;
-              matchedText =
-                  exactMatch
-                      ? '**** **** ${extractedVoterId.substring(extractedVoterId.length - 4)}'
-                      : '';
+            // FIX: Indian Voter IDs are alphanumeric (e.g. ABC1234567), not purely numeric.
+            // Primary pattern: 3 uppercase letters + 7 digits (most common format)
+            // Fallback: also try the older numeric-only 10-12 digit format, and 10-12 mixed format
+            final voterIdPatternAlpha = RegExp(r'\b[A-Z]{3}\d{7}\b');
+            final voterIdPatternNum = RegExp(r'\b[A-Z0-9]{10,12}\b');
+            final alphaMatch = voterIdPatternAlpha.firstMatch(ocrText);
+            final numMatch = voterIdPatternNum.firstMatch(ocrText);
+            final extractedVoterId =
+                alphaMatch?.group(0) ?? numMatch?.group(0) ?? '';
+            if (extractedVoterId.isNotEmpty) {
+              exactMatch = extractedVoterId.toLowerCase() == formattedValue.toLowerCase();
+              if (exactMatch) {
+                // If the exact length is matching and it is not purely masked
+                matchedText = '${extractedVoterId.substring(0, extractedVoterId.length - 4).replaceAll(RegExp(r'.'), '*')}${extractedVoterId.substring(extractedVoterId.length - 4)}';
+              } else {
+                  matchedText = '';
+              }
             }
           } else if (key == 'name' || key == 'fatherName' || key == 'gender') {
             exactMatch = ocrTextLower.contains(formattedValue);
@@ -463,8 +509,10 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
         return;
       }
 
-      String documentId =
-          '${DateTime.now().millisecondsSinceEpoch}_${selectedFileName ?? "document"}';
+      String safeFileName = (selectedFileName?.isNotEmpty == true) 
+          ? selectedFileName!.replaceAll(RegExp(r'\s+'), '_') 
+          : 'document';
+      String documentId = '${DateTime.now().millisecondsSinceEpoch}_$safeFileName';
 
       Map<String, String> verifiedFields = {};
       comparisonResults.forEach((key, value) {
@@ -473,9 +521,27 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
         }
       });
 
+      // FIX: Upload actual file bytes/file to Firebase Storage first
+      String? fileUrl;
+      try {
+        fileUrl = await StorageService.uploadDocument(
+          uid: user.uid,
+          documentType: widget.title,
+          fileName: selectedFileName ?? 'document',
+          file: kIsWeb ? null : selectedImage,
+          bytes: webImageBytes,
+        );
+      } catch (e) {
+        Fluttertoast.showToast(
+          msg: 'File upload warning: $e — metadata saved without file URL',
+          toastLength: Toast.LENGTH_LONG,
+          gravity: ToastGravity.BOTTOM,
+        );
+      }
+
       Map<String, dynamic> documentData = {
         'fileName': selectedFileName,
-        'uploadDate': FieldValue.serverTimestamp(),
+        'submittedAt': FieldValue.serverTimestamp(), // FIX: was 'uploadDate', now matches Submission.fromMap key
         'verified': isVerified,
         'overallSimilarity': overallSimilarity,
         'verifiedFields': verifiedFields,
@@ -484,6 +550,11 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
         'name': widget.expectedValues['name'] ?? 'Unknown',
         'documentType': widget.title,
         'userId': user.uid,
+        if (fileUrl != null) 'fileUrl': fileUrl, // FIX: store download URL
+        // OCR bounding-box data for admin document preview highlights
+        if (_ocrBlocks.isNotEmpty) 'ocrBlocks': _ocrBlocks,
+        if (_imageWidth > 0) 'imageWidth': _imageWidth,
+        if (_imageHeight > 0) 'imageHeight': _imageHeight,
       };
 
       switch (widget.title) {
@@ -658,7 +729,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
         actions: [
           IconButton(
             icon: Icon(
-              widget.isDarkMode ? Icons.light_mode : Icons.dark_mode,
+              _isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
               color: const Color(0xFFFFFFFF),
             ),
             onPressed: widget.toggleDarkMode,
@@ -675,7 +746,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
             colors:
-                widget.isDarkMode
+                _isDarkMode
                     ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
                     : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
           ),
@@ -689,19 +760,8 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  "Upload ${widget.title} Verification",
-                  style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    color:
-                        widget.isDarkMode
-                            ? const Color(0xFFFFFFFF)
-                            : const Color(0xFF1B263B),
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 16),
+                // FIX: Removed duplicate title — the AppBar already shows the screen name.
+                const SizedBox(height: 4),
                 Text(
                   isLocked
                       ? "Upload is locked. Please wait for admin review or rejection."
@@ -709,7 +769,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                   style: TextStyle(
                     fontSize: 14,
                     color:
-                        widget.isDarkMode
+                        _isDarkMode
                             ? const Color(0xFFB0C4DE)
                             : const Color(0xFF6B7280),
                   ),
@@ -721,14 +781,14 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                     child: Container(
                       decoration: BoxDecoration(
                         color:
-                            widget.isDarkMode
+                            _isDarkMode
                                 ? const Color(0xFF2A3A5A)
                                 : const Color(0xFFFFFFFF).withOpacity(0.9),
                         borderRadius: BorderRadius.circular(10),
                         boxShadow: [
                           BoxShadow(
                             color: Colors.black.withOpacity(
-                              widget.isDarkMode ? 0.3 : 0.1,
+                              _isDarkMode ? 0.3 : 0.1,
                             ),
                             blurRadius: 10,
                             offset: const Offset(0, 5),
@@ -746,7 +806,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                             const SizedBox(height: 16),
                             CircularProgressIndicator(
                               color:
-                                  widget.isDarkMode
+                                  _isDarkMode
                                       ? const Color(0xFFB0C4DE)
                                       : const Color(0xFF415A77),
                             ),
@@ -755,7 +815,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                               'Processing with ML Kit...',
                               style: TextStyle(
                                 color:
-                                    widget.isDarkMode
+                                    _isDarkMode
                                         ? const Color(0xFFB0C4DE)
                                         : const Color(0xFF6B7280),
                               ),
@@ -770,7 +830,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
                                 color:
-                                    widget.isDarkMode
+                                    _isDarkMode
                                         ? const Color(0xFFFFFFFF)
                                         : const Color(0xFF1B263B),
                               ),
@@ -785,7 +845,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                                   fontSize: 18,
                                   fontWeight: FontWeight.bold,
                                   color:
-                                      widget.isDarkMode
+                                      _isDarkMode
                                           ? const Color(0xFFFFFFFF)
                                           : const Color(0xFF1B263B),
                                 ),
@@ -815,13 +875,13 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
     return Container(
       decoration: BoxDecoration(
         color:
-            widget.isDarkMode
+            _isDarkMode
                 ? const Color(0xFF2A3A5A)
                 : const Color(0xFFF1F5F9),
         borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(widget.isDarkMode ? 0.3 : 0.1),
+            color: Colors.black.withOpacity(_isDarkMode ? 0.3 : 0.1),
             blurRadius: 10,
             offset: const Offset(0, 5),
           ),
@@ -839,7 +899,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                 Icons.upload_file,
                 size: 48,
                 color:
-                    widget.isDarkMode
+                    _isDarkMode
                         ? const Color(0xFFB0C4DE)
                         : const Color(0xFF415A77),
               ),
@@ -850,7 +910,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                   fontSize: 16,
                   fontWeight: FontWeight.w500,
                   color:
-                      widget.isDarkMode
+                      _isDarkMode
                           ? const Color(0xFFFFFFFF)
                           : const Color(0xFF1B263B),
                 ),
@@ -862,7 +922,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                 style: TextStyle(
                   fontSize: 12,
                   color:
-                      widget.isDarkMode
+                      _isDarkMode
                           ? const Color(0xFFB0C4DE)
                           : const Color(0xFF6B7280),
                 ),
@@ -879,13 +939,13 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
       margin: const EdgeInsets.symmetric(vertical: 16),
       decoration: BoxDecoration(
         color:
-            widget.isDarkMode
+            _isDarkMode
                 ? const Color(0xFF2A3A5A)
                 : const Color(0xFFF1F5F9),
         borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(widget.isDarkMode ? 0.3 : 0.1),
+            color: Colors.black.withOpacity(_isDarkMode ? 0.3 : 0.1),
             blurRadius: 10,
             offset: const Offset(0, 5),
           ),
@@ -897,7 +957,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
           height: 200,
           width: double.infinity,
           color:
-              widget.isDarkMode
+              _isDarkMode
                   ? const Color(0xFF1B263B)
                   : const Color(0xFFF5F7FA),
           child:
@@ -913,13 +973,13 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
     return Container(
       decoration: BoxDecoration(
         color:
-            widget.isDarkMode
+            _isDarkMode
                 ? const Color(0xFF2A3A5A)
                 : const Color(0xFFF1F5F9),
         borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(widget.isDarkMode ? 0.3 : 0.1),
+            color: Colors.black.withOpacity(_isDarkMode ? 0.3 : 0.1),
             blurRadius: 10,
             offset: const Offset(0, 5),
           ),
@@ -932,7 +992,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
           style: TextStyle(
             fontSize: 14,
             color:
-                widget.isDarkMode
+                _isDarkMode
                     ? const Color(0xFFFFFFFF)
                     : const Color(0xFF1B263B),
           ),
@@ -945,13 +1005,13 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
     return Container(
       decoration: BoxDecoration(
         color:
-            widget.isDarkMode
+            _isDarkMode
                 ? const Color(0xFF2A3A5A)
                 : const Color(0xFFF1F5F9),
         borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(widget.isDarkMode ? 0.3 : 0.1),
+            color: Colors.black.withOpacity(_isDarkMode ? 0.3 : 0.1),
             blurRadius: 10,
             offset: const Offset(0, 5),
           ),
@@ -988,7 +1048,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
                 color:
-                    widget.isDarkMode
+                    _isDarkMode
                         ? const Color(0xFF1B263B)
                         : const Color(0xFFF5F7FA),
                 borderRadius: BorderRadius.circular(8),
@@ -1044,7 +1104,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                               fontSize: 14,
                               fontWeight: FontWeight.w600,
                               color:
-                                  widget.isDarkMode
+                                  _isDarkMode
                                       ? const Color(0xFFFFFFFF)
                                       : const Color(0xFF1B263B),
                             ),
@@ -1094,7 +1154,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                             style: TextStyle(
                               fontSize: 13,
                               color:
-                                  widget.isDarkMode
+                                  _isDarkMode
                                       ? const Color(0xFFB0C4DE)
                                       : const Color(0xFF6B7280),
                             ),
@@ -1119,7 +1179,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                             fontSize: 12,
                             fontStyle: FontStyle.italic,
                             color:
-                                widget.isDarkMode
+                                _isDarkMode
                                     ? Colors.amber
                                     : Colors.deepOrange,
                           ),
@@ -1138,7 +1198,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
                     fontSize: 12,
                     fontStyle: FontStyle.italic,
                     color:
-                        widget.isDarkMode
+                        _isDarkMode
                             ? const Color(0xFFB0C4DE)
                             : const Color(0xFF6B7280),
                   ),

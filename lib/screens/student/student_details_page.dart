@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 import '/screens/student/dashboard/dashboard_screen.dart';
+import '/utils/app_constants.dart';
 
 class StudentDetailsPage extends StatefulWidget {
   final VoidCallback toggleDarkMode;
@@ -85,12 +86,7 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
       });
 
       // Create document placeholders for each document type
-      final documentTypes = [
-        'aadhar_card',
-        'voter_id',
-        '10th_marksheet',
-        '12th_marksheet',
-      ];
+      final documentTypes = AppConstants.documentTypes.map((type) => type.toLowerCase().replaceAll(' ', '_')).toList();
 
       for (var docType in documentTypes) {
         await FirebaseFirestore.instance
@@ -146,13 +142,31 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: Icon(
+              isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
+              color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
+            ),
+            tooltip: "Toggle Theme",
+            onPressed: widget.toggleDarkMode,
+          ),
+        ],
+      ),
+      extendBodyBehindAppBar: true,
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [Color(0xFFFFFFFF), Color(0xFFF5F7FA)],
+            colors: isDarkMode
+                ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
+                : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
           ),
         ),
         child: SafeArea(
@@ -164,10 +178,10 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     // App Name
-                    const Text(
+                    Text(
                       'VORTEX',
                       style: TextStyle(
-                        color: Color(0xFF1B263B),
+                        color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
                         fontWeight: FontWeight.bold,
                         fontSize: 42,
                         letterSpacing: 2.0,
@@ -179,7 +193,9 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
                     // Container for the form
                     Container(
                       decoration: BoxDecoration(
-                        color: const Color(0xFFFFFFFF).withOpacity(0.9),
+                        color: isDarkMode 
+                            ? const Color(0xFF2A3A5A).withOpacity(0.9) 
+                            : const Color(0xFFFFFFFF).withOpacity(0.9),
                         borderRadius: BorderRadius.circular(10),
                         boxShadow: [
                           BoxShadow(
@@ -193,10 +209,10 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
                       child: Column(
                         children: [
                           // Title
-                          const Text(
+                          Text(
                             'Student Details',
                             style: TextStyle(
-                              color: Color(0xFF1B263B),
+                              color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
                               fontSize: 28,
                               fontWeight: FontWeight.bold,
                             ),
@@ -212,17 +228,17 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
                                 // First Name
                                 TextFormField(
                                   controller: _nameController,
-                                  style: const TextStyle(
-                                    color: Color(0xFF1B263B),
+                                  style: TextStyle(
+                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
                                   ),
                                   decoration: InputDecoration(
                                     hintText: 'First Name',
-                                    hintStyle: const TextStyle(
-                                      color: Color(0xFF6B7280),
+                                    hintStyle: TextStyle(
+                                      color: isDarkMode ? Colors.white54 : const Color(0xFF6B7280),
                                     ),
                                     filled: true,
-                                    fillColor: const Color(0xFFF1F5F9),
-                                    border: OutlineInputBorder(
+                                    fillColor: isDarkMode ? const Color(0xFF1B263B) : const Color(0xFFF1F5F9),
+                                    border: const OutlineInputBorder(
                                       borderRadius: BorderRadius.all(
                                         Radius.circular(8),
                                       ),
@@ -258,17 +274,17 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
                                 // Last Name
                                 TextFormField(
                                   controller: _lastNameController,
-                                  style: const TextStyle(
-                                    color: Color(0xFF1B263B),
+                                  style: TextStyle(
+                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
                                   ),
                                   decoration: InputDecoration(
                                     hintText: 'Last Name',
-                                    hintStyle: const TextStyle(
-                                      color: Color(0xFF6B7280),
+                                    hintStyle: TextStyle(
+                                      color: isDarkMode ? Colors.white54 : const Color(0xFF6B7280),
                                     ),
                                     filled: true,
-                                    fillColor: const Color(0xFFF1F5F9),
-                                    border: OutlineInputBorder(
+                                    fillColor: isDarkMode ? const Color(0xFF1B263B) : const Color(0xFFF1F5F9),
+                                    border: const OutlineInputBorder(
                                       borderRadius: BorderRadius.all(
                                         Radius.circular(8),
                                       ),
@@ -304,17 +320,17 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
                                 // Email
                                 TextFormField(
                                   controller: _emailController,
-                                  style: const TextStyle(
-                                    color: Color(0xFF1B263B),
+                                  style: TextStyle(
+                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
                                   ),
                                   decoration: InputDecoration(
                                     hintText: 'Email',
-                                    hintStyle: const TextStyle(
-                                      color: Color(0xFF6B7280),
+                                    hintStyle: TextStyle(
+                                      color: isDarkMode ? Colors.white54 : const Color(0xFF6B7280),
                                     ),
                                     filled: true,
-                                    fillColor: const Color(0xFFF1F5F9),
-                                    border: OutlineInputBorder(
+                                    fillColor: isDarkMode ? const Color(0xFF1B263B) : const Color(0xFFF1F5F9),
+                                    border: const OutlineInputBorder(
                                       borderRadius: BorderRadius.all(
                                         Radius.circular(8),
                                       ),
@@ -345,17 +361,20 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
                                 // Phone Number with Country Code Dropdown
                                 IntlPhoneField(
                                   controller: _phoneController,
-                                  style: const TextStyle(
-                                    color: Color(0xFF1B263B),
+                                  style: TextStyle(
+                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
+                                  ),
+                                  dropdownTextStyle: TextStyle(
+                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
                                   ),
                                   decoration: InputDecoration(
                                     hintText: 'Phone Number',
-                                    hintStyle: const TextStyle(
-                                      color: Color(0xFF6B7280),
+                                    hintStyle: TextStyle(
+                                      color: isDarkMode ? Colors.white54 : const Color(0xFF6B7280),
                                     ),
                                     filled: true,
-                                    fillColor: const Color(0xFFF1F5F9),
-                                    border: OutlineInputBorder(
+                                    fillColor: isDarkMode ? const Color(0xFF1B263B) : const Color(0xFFF1F5F9),
+                                    border: const OutlineInputBorder(
                                       borderRadius: BorderRadius.all(
                                         Radius.circular(8),
                                       ),

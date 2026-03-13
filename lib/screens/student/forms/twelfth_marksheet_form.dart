@@ -5,11 +5,14 @@ import '/screens/student/upload_document_screen.dart';
 class TwelfthMarksheetForm extends StatefulWidget {
   final VoidCallback toggleDarkMode;
   final bool isDarkMode;
+  // FIX: Added for consistency with VoterIdForm
+  final void Function(int)? onTabChange;
 
   const TwelfthMarksheetForm({
     super.key,
     required this.toggleDarkMode,
     required this.isDarkMode,
+    this.onTabChange,
   });
 
   @override

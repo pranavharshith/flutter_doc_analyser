@@ -8,11 +8,14 @@ import '/screens/student/upload_document_screen.dart';
 class AadharCardForm extends StatefulWidget {
   final VoidCallback toggleDarkMode;
   final bool isDarkMode;
+  // FIX: Added onTabChange for consistency with VoterIdForm
+  final void Function(int)? onTabChange;
 
   const AadharCardForm({
     super.key,
     required this.toggleDarkMode,
     required this.isDarkMode,
+    this.onTabChange, // optional — caller may provide it
   });
 
   @override

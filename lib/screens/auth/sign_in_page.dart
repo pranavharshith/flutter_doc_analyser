@@ -43,6 +43,7 @@ class _SignInPageState extends State<SignInPage> {
             email: _emailController.text.trim(),
             password: _passwordController.text.trim(),
           );
+      if (!mounted) return; // FIX: mounted check after async
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Login Successful"),
@@ -56,6 +57,7 @@ class _SignInPageState extends State<SignInPage> {
               .collection('users')
               .doc(userCredential.user!.uid)
               .get();
+      if (!mounted) return; // FIX: mounted check after Firestore fetch
       final role = userDoc.exists ? userDoc.data()!['role'] : 'student';
 
       if (role == 'admin') {
@@ -102,6 +104,7 @@ class _SignInPageState extends State<SignInPage> {
         }
       }
     } catch (e) {
+      if (!mounted) return; // FIX: mounted check before showing error
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text("Error: ${e.toString()}"),
@@ -110,7 +113,7 @@ class _SignInPageState extends State<SignInPage> {
       );
     }
 
-    setState(() => _isLoading = false);
+    if (mounted) setState(() => _isLoading = false); // FIX: mounted check
   }
 
   @override

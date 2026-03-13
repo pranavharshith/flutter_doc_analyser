@@ -8,7 +8,7 @@ plugins {
 android {
     namespace = "com.example.new_tester"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = "26.3.11579264"  // <-- Keep this line only 27.0.12077973
+    ndkVersion = "27.0.12077973"  // <-- Keep this line only 27.0.12077973
     
     // Remove this line:
     // ndkVersion = flutter.ndkVersion
@@ -24,7 +24,7 @@ android {
 
     defaultConfig {
     applicationId = "com.example.new_tester"
-    minSdk = 23 // Update this to 23
+    minSdk = flutter.minSdkVersion // Update this to 23
     targetSdk = flutter.targetSdkVersion
     versionCode = flutter.versionCode
     versionName = flutter.versionName
@@ -34,6 +34,8 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("debug")
+            isMinifyEnabled = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 }

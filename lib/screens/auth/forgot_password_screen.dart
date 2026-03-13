@@ -1,35 +1,62 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import '/utils/validators.dart';
 
-class ForgotPasswordScreen extends StatelessWidget {
+/// FIX: Converted from StatelessWidget to StatefulWidget so that:
+/// 1. TextEditingController is properly disposed
+/// 2. Loading state can be managed
+/// 3. `mounted` is available for async guards
+/// FIX: Added proper email format validation (was only checking empty)
+class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final forgotPasswordFormKey = GlobalKey<FormState>();
-    final TextEditingController emailController = TextEditingController();
+  State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
+}
 
-    Future<void> sendPasswordResetEmail() async {
-      if (!forgotPasswordFormKey.currentState!.validate()) return;
+class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  bool _isLoading = false;
 
-      try {
-        await FirebaseAuth.instance.sendPasswordResetEmail(
-          email: emailController.text.trim(),
-        );
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Password reset link sent!')),
-        );
-        Navigator.pop(context);
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
+  @override
+  void dispose() {
+    _emailController.dispose(); // FIX: controller now properly disposed
+    super.dispose();
+  }
+
+  Future<void> _sendPasswordResetEmail() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(
+        email: _emailController.text.trim(),
+      );
+
+      if (!mounted) return; // FIX: mounted check after async
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password reset link sent!')),
+      );
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return; // FIX: mounted check before showing error
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: ${e.toString()}'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
 
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: const Color(0xFFFFFFFF),
@@ -68,12 +95,13 @@ class ForgotPasswordScreen extends StatelessWidget {
               ),
               const SizedBox(height: 30),
               Form(
-                key: forgotPasswordFormKey,
+                key: _formKey,
                 child: Column(
                   children: [
                     TextFormField(
-                      controller: emailController,
+                      controller: _emailController,
                       style: const TextStyle(color: Color(0xFF1B263B)),
+                      keyboardType: TextInputType.emailAddress,
                       decoration: InputDecoration(
                         hintText: 'Email',
                         hintStyle: const TextStyle(color: Color(0xFF6B7280)),
@@ -89,20 +117,9 @@ class ForgotPasswordScreen extends StatelessWidget {
                         ),
                         errorStyle: const TextStyle(color: Color(0xFFEF4444)),
                       ),
-                      validator: (value) {
-                        if (value == null || value.isEmpty) {
-                          return 'Please enter your email';
-                        }
-                        return null;
-                      },
+                      // FIX: now uses proper email format validator
+                      validator: Validators.email,
                       autovalidateMode: AutovalidateMode.onUserInteraction,
-                      buildCounter:
-                          (
-                            context, {
-                            required currentLength,
-                            required isFocused,
-                            maxLength,
-                          }) => null,
                     ),
                     const SizedBox(height: 30),
                     Container(
@@ -117,7 +134,8 @@ class ForgotPasswordScreen extends StatelessWidget {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: ElevatedButton(
-                        onPressed: sendPasswordResetEmail,
+                        onPressed:
+                            _isLoading ? null : _sendPasswordResetEmail,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.transparent,
                           shadowColor: Colors.transparent,
@@ -125,14 +143,23 @@ class ForgotPasswordScreen extends StatelessWidget {
                             borderRadius: BorderRadius.circular(8),
                           ),
                         ),
-                        child: const Text(
-                          'Send Reset Link',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFFFFFFFF),
-                          ),
-                        ),
+                        child: _isLoading
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Text(
+                                'Send Reset Link',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFFFFFFFF),
+                                ),
+                              ),
                       ),
                     ),
                   ],

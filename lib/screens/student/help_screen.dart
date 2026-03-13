@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 
 class HelpScreen extends StatelessWidget {
-  const HelpScreen({super.key});
+  final bool isDarkMode;
+  const HelpScreen({super.key, required this.isDarkMode});
 
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       body: Container(
