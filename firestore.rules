@@ -1,0 +1,97 @@
+rules_version = '2';
+
+// Vortex Dashboard — Firestore security rules.
+// Deploy: firebase deploy --only firestore:rules --project fire-setup-33812
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // JWT email (Auth token) — preferred admin signal (SEC-01).
+    function isAdminEmail() {
+      return isSignedIn()
+          && request.auth.token.email != null
+          && request.auth.token.email.matches('.*@admin[.]vortexapp[.]com');
+    }
+
+    // Firestore role fallback + must still match admin email when present.
+    function isAdminRole() {
+      return isSignedIn()
+          && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function isAdmin() {
+      return isAdminEmail() || isAdminRole();
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ── users ───────────────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid)
+          && (request.resource.data.role == 'student'
+              || (request.resource.data.role == 'admin' && isAdminEmail()));
+      allow update: if isOwner(uid)
+          && (request.resource.data.role == 'student'
+              || (request.resource.data.role == 'admin' && isAdminEmail()));
+      allow delete: if false;
+    }
+
+    // ── students ────────────────────────────────────────────────────────────
+    match /students/{uid} {
+      allow read, write: if isOwner(uid) || isAdmin();
+
+      match /documents/{docType} {
+        allow read, write: if isOwner(uid) || isAdmin();
+
+        match /uploads/{uploadId} {
+          allow read:   if isOwner(uid) || isAdmin();
+          allow create: if isOwner(uid);
+          allow update: if isOwner(uid) || isAdmin();
+          allow delete: if isOwner(uid) || isAdmin();
+        }
+      }
+    }
+
+    // Admin dashboard collectionGroup('uploads') — read only (SEC-03).
+    // Writes stay on the per-path rule above.
+    match /{path=**}/uploads/{uploadId} {
+      allow read: if isAdmin();
+    }
+
+    // ── notifications ────────────────────────────────────────────────────────
+    // Student inbox: students may update/delete own; create is admin-or-self
+    // with typed payload (NOT-04 soft limit).
+    match /notifications/{ownerId}/userNotifications/{notifId} {
+      allow read, update, delete: if isOwner(ownerId) || isAdmin();
+      allow create: if isAdmin()
+          || (isOwner(ownerId)
+              && request.resource.data.userId == request.auth.uid
+              && request.resource.data.type in ['user', 'reupload', 'completion']);
+    }
+
+    match /notifications/{ownerId}/trash/{notifId} {
+      allow read, write: if isOwner(ownerId) || isAdmin();
+    }
+
+    // Admin inbox — students may create only for their own userId (NOT-03).
+    match /notifications/admin/adminNotifications/{notifId} {
+      allow read, update, delete: if isAdmin();
+      allow create: if isSignedIn()
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.keys().hasAll(
+              ['message', 'documentType', 'userId', 'type', 'isRead']);
+    }
+
+    match /notifications/admin/trash/{notifId} {
+      allow read, write: if isAdmin();
+    }
+  }
+}

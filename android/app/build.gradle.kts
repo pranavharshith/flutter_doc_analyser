@@ -1,17 +1,18 @@
 plugins {
     id("com.android.application")
-    id("kotlin-android")
+    // Match version declared in settings.gradle.kts (org.jetbrains.kotlin.android).
+    id("org.jetbrains.kotlin.android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    // Required so google-services.json package/SHA line up with Play Services.
+    id("com.google.gms.google-services")
 }
 
 android {
-    namespace = "com.example.new_tester"
+    // Must match package_name in google-services.json (Firebase Android app).
+    namespace = "com.example.my_app"
     compileSdk = flutter.compileSdkVersion
-    ndkVersion = "27.0.12077973"  // <-- Keep this line only 27.0.12077973
-    
-    // Remove this line:
-    // ndkVersion = flutter.ndkVersion
+    ndkVersion = "27.0.12077973"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -23,11 +24,11 @@ android {
     }
 
     defaultConfig {
-    applicationId = "com.example.new_tester"
-    minSdk = flutter.minSdkVersion // Update this to 23
-    targetSdk = flutter.targetSdkVersion
-    versionCode = flutter.versionCode
-    versionName = flutter.versionName
+        applicationId = "com.example.my_app"
+        minSdk = flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
     }
 
 

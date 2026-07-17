@@ -1,116 +1,112 @@
-
-
-import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
+import '/screens/auth/auth_page.dart';
+import '/ui/dialogs.dart';
+import '/ui/ui.dart';
+import '/utils/app_constants.dart';
+import '/utils/app_snackbar.dart';
+import '/utils/theme.dart';
+import '/widgets/theme_toggle_button.dart';
 import 'admin_notifications_screen.dart';
 import 'admin_trash_screen.dart';
+import 'document_management_screen.dart';
+import 'report_generation_screen.dart';
+import 'settings_screen.dart';
+import 'submission_model.dart';
 import 'submission_popup.dart';
-import '/screens/auth/auth_page.dart';
-import '/utils/app_constants.dart';
 
-class Submission {
-  final String id;
-  final String name;
-  final String documentType;
-  String status;
-  final Timestamp submittedAt;
-  final Map<String, dynamic> details;
-  final double similarity;
-  final Map<String, String> verifiedFields;
+export 'submission_model.dart';
 
-  Submission({
-    required this.id,
-    required this.name,
-    required this.documentType,
-    required this.status,
-    required this.submittedAt,
-    required this.details,
-    required this.similarity,
-    required this.verifiedFields,
-  });
-
-  factory Submission.fromMap(Map<String, dynamic> map, String id) {
-    return Submission(
-      id: id,
-      name: map['name'] ?? 'Unknown',
-      documentType: map['documentType'] ?? '',
-      status: map['status'] ?? 'Not Submitted',
-      submittedAt: map['submittedAt'] ?? Timestamp.now(),
-      details: map,
-      similarity: (map['overallSimilarity'] ?? 0.0).toDouble(),
-      verifiedFields: Map<String, String>.from(map['verifiedFields'] ?? {}),
-    );
-  }
-
-  bool isValid() {
-    return name.isNotEmpty &&
-        name != 'Unknown' &&
-        documentType.isNotEmpty &&
-        status.isNotEmpty;
-  }
-}
-
+/// Admin home: live submissions feed (capped collectionGroup) + student-style chrome.
 class AdminDashboardScreen extends StatefulWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
-
-  const AdminDashboardScreen({
-    super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
-  });
+  const AdminDashboardScreen({super.key});
 
   @override
-  _AdminDashboardScreenState createState() => _AdminDashboardScreenState();
+  State<AdminDashboardScreen> createState() => _AdminDashboardScreenState();
 }
 
 class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
-  bool get _isDarkMode => Theme.of(context).brightness == Brightness.dark;
+  final _searchController = TextEditingController();
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   String _searchQuery = '';
   String _statusFilter = 'All';
   Submission? _selectedSubmission;
-  bool _isLoading = true;
   bool _isRefreshing = false;
   Map<String, List<Submission>> _cachedSubmissions = {};
 
-  final List<String> _documentTypes = AppConstants.documentTypes;
+  late Stream<Map<String, List<Submission>>> _submissionsStream;
+  late Stream<int> _unreadCountStream;
+  int _streamGeneration = 0;
+
+  static const _documentTypes = AppConstants.documentTypes;
 
   @override
   void initState() {
     super.initState();
-    // FIX: isLoading is now controlled by StreamBuilder connection state
-    // rather than an arbitrary 1-second timer.
-    _isLoading = false;
+    _submissionsStream = _createSubmissionsStream();
+    _unreadCountStream = FirebaseFirestore.instance
+        .collection('notifications')
+        .doc('admin')
+        .collection('adminNotifications')
+        .where('isRead', isEqualTo: false)
+        .limit(11)
+        .snapshots()
+        .map((s) => s.docs.length);
   }
 
-  void _updateStatus(Submission submission, String newStatus) async {
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  String _resolveUserId(Submission s) {
+    final fromField = (s.details['userId'] as String?)?.trim() ?? '';
+    if (fromField.isNotEmpty) return fromField;
+    return s.userId;
+  }
+
+  Future<void> _updateStatus(
+    Submission submission,
+    String newStatus, {
+    String? rejectionReason,
+  }) async {
+    final previousStatus = submission.status;
+    final userId = _resolveUserId(submission);
+    final docType = AppConstants.documentTypeKey(submission.documentType);
+    final docId = submission.id;
+    final cacheKey = userId.isNotEmpty ? userId : submission.name;
+
+    if (userId.isEmpty) {
+      if (mounted) {
+        AppSnackBar.error(context, 'Cannot update: missing student userId');
+      }
+      return;
+    }
+
     setState(() {
-      submission.status = newStatus;
+      final updated = submission.copyWith(
+        status: newStatus,
+        details: {
+          ...submission.details,
+          'status': newStatus,
+          if (rejectionReason != null && rejectionReason.isNotEmpty)
+            'rejectionReason': rejectionReason,
+        },
+      );
       _selectedSubmission = null;
-      final userName = submission.name;
-      final userSubmissions = _cachedSubmissions[userName] ?? [];
-      final index = userSubmissions.indexWhere((s) => s.id == submission.id);
+      final list = _cachedSubmissions[cacheKey] ?? [];
+      final index = list.indexWhere((s) => s.id == submission.id);
       if (index != -1) {
-        userSubmissions[index] = submission;
-        _cachedSubmissions[userName] = userSubmissions;
+        list[index] = updated;
+        _cachedSubmissions[cacheKey] = list;
       }
     });
 
     try {
-      // FIX: Read userId from the document's 'userId' field instead of
-      // splitting the composite id on '_' (Firebase UIDs can contain '_')
-      final userId = submission.details['userId'] as String? ?? '';
-      final docType = submission.documentType
-          .toLowerCase()
-          .replaceAll(' ', '_');
-      if (userId.isEmpty) {
-        throw Exception('Missing userId in submission data');
-      }
-      // FIX: submission.id is the Firestore upload document ID directly
-      final docId = submission.id;
-
       await FirebaseFirestore.instance
           .collection('students')
           .doc(userId)
@@ -118,1126 +114,824 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           .doc(docType)
           .collection('uploads')
           .doc(docId)
-          .update({'status': newStatus});
+          .update({
+        'status': newStatus,
+        'reviewedAt': FieldValue.serverTimestamp(),
+        if (rejectionReason != null && rejectionReason.isNotEmpty)
+          'rejectionReason': rejectionReason,
+      });
+
+      await FirebaseFirestore.instance
+          .collection('students')
+          .doc(userId)
+          .collection('documents')
+          .doc(docType)
+          .set({
+        'status': newStatus,
+        'locked': newStatus == 'Verified',
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
       if (newStatus == 'Rejected') {
-        await FirebaseFirestore.instance
-            .collection('students')
-            .doc(userId)
-            .collection('documents')
-            .doc(docType)
-            .update({'locked': false});
-
+        final reason = (rejectionReason ?? '').trim();
         await FirebaseFirestore.instance
             .collection('notifications')
             .doc(userId)
             .collection('userNotifications')
             .add({
-              'message':
-                  'Your ${submission.documentType} was rejected. Please reupload.',
-              'documentType': submission.documentType,
-              'userId': userId,
-              'userName': submission.name,
-              'timestamp': FieldValue.serverTimestamp(),
-              'type': 'reupload',
-              'isRead': false,
-            });
+          'message': reason.isEmpty
+              ? 'Your ${submission.documentType} was rejected. Please re-upload.'
+              : 'Your ${submission.documentType} was rejected: $reason',
+          'documentType': submission.documentType,
+          'userId': userId,
+          'userName': submission.name,
+          'uploadId': docId,
+          'timestamp': FieldValue.serverTimestamp(),
+          'type': AppConstants.notifTypeReupload,
+          'isRead': false,
+        });
       } else if (newStatus == 'Verified') {
         await FirebaseFirestore.instance
+            .collection('notifications')
+            .doc(userId)
+            .collection('userNotifications')
+            .add({
+          'message': 'Your ${submission.documentType} has been verified.',
+          'documentType': submission.documentType,
+          'userId': userId,
+          'userName': submission.name,
+          'uploadId': docId,
+          'timestamp': FieldValue.serverTimestamp(),
+          'type': AppConstants.notifTypeUser,
+          'isRead': false,
+        });
+        await _maybeNotifyAllDocsVerified(userId, submission.name);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        final list = _cachedSubmissions[cacheKey] ?? [];
+        final index = list.indexWhere((s) => s.id == submission.id);
+        if (index != -1) {
+          list[index] = submission.copyWith(status: previousStatus);
+          _cachedSubmissions[cacheKey] = list;
+        }
+      });
+      AppSnackBar.error(context, 'Error updating status: $e');
+    }
+  }
+
+  Future<void> _maybeNotifyAllDocsVerified(
+    String userId,
+    String studentName,
+  ) async {
+    try {
+      for (final key in AppConstants.documentTypeKeys) {
+        final parent = await FirebaseFirestore.instance
             .collection('students')
             .doc(userId)
             .collection('documents')
-            .doc(docType)
-            .update({'locked': true});
+            .doc(key)
+            .get();
+        if (parent.data()?['status'] != 'Verified') return;
       }
-
       await FirebaseFirestore.instance
           .collection('notifications')
           .doc(userId)
           .collection('userNotifications')
           .add({
-            'message': 'Your ${submission.documentType} has been $newStatus.',
-            'documentType': submission.documentType,
-            'userId': userId,
-            'userName': submission.name,
-            'timestamp': FieldValue.serverTimestamp(),
-            'type': 'user',
-            'isRead': false,
-          });
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error updating status: $e')));
-      }
-    }
+        'message':
+            'All documents are verified. You are fully cleared — thank you!',
+        'documentType': 'All',
+        'userId': userId,
+        'userName': studentName,
+        'timestamp': FieldValue.serverTimestamp(),
+        'type': AppConstants.notifTypeCompletion,
+        'isRead': false,
+      });
+    } catch (_) {}
   }
 
-  Stream<Map<String, List<Submission>>> _getFilteredGroupedSubmissions() {
+  /// Cap at 200 newest uploads — keeps admin load bounded.
+  Stream<Map<String, List<Submission>>> _createSubmissionsStream() {
     return FirebaseFirestore.instance
         .collectionGroup('uploads')
         .orderBy('submittedAt', descending: true)
-        .limit(100)
+        .limit(200)
         .snapshots()
-        .map((snapshot) {
-          final Map<String, List<Submission>> grouped = {};
+        .map(_groupSnapshot);
+  }
 
-          for (var docSnapshot in snapshot.docs) {
-            final docData = docSnapshot.data();
-            final docId = docSnapshot.id;
-            
-            // Extract userId from the document reference path
-            // Path: students/{userId}/documents/{docType}/uploads/{uploadId}
-            final pathSegments = docSnapshot.reference.path.split('/');
-            final userId = pathSegments.length > 1 ? pathSegments[1] : '';
-            
-            // Allow docData to provide name and documentType, otherwise fallback.
-            // A more robust implementation would fetch user documents lazily or cache them,
-            // but for immediate N+1 relief we use details provided in the upload or the path.
-            final userName = docData['studentName'] ?? docData['name'] ?? 'Student ($userId)';
-            final docTypeKey = pathSegments.length > 3 ? pathSegments[3] : '';
-            final documentType = docData['documentType'] ?? 
-                docTypeKey.replaceAll('_', ' ').replaceFirstMapped(
-                  RegExp(r'^\w'), (match) => match.group(0)!.toUpperCase()
-                );
+  Map<String, List<Submission>> _groupSnapshot(
+    QuerySnapshot<Map<String, dynamic>> snapshot,
+  ) {
+    final Map<String, Map<String, List<Submission>>> byUserType = {};
 
-            final submission = Submission.fromMap({
-              ...docData,
-              'name': userName,
-              'documentType': documentType,
-              'userId': userId,
-            }, docId);
+    for (final docSnapshot in snapshot.docs) {
+      final docData = docSnapshot.data();
+      final pathSegments = docSnapshot.reference.path.split('/');
+      final pathUserId = pathSegments.length > 1 ? pathSegments[1] : '';
+      final userId = (docData['userId'] as String?)?.trim().isNotEmpty == true
+          ? (docData['userId'] as String).trim()
+          : pathUserId;
+      if (userId.isEmpty) continue;
 
-            if (!grouped.containsKey(userName)) {
-              grouped[userName] = [];
-            }
+      final docTypeKey = pathSegments.length > 3 ? pathSegments[3] : '';
+      final documentType = AppConstants.normalizeDocumentType(
+        (docData['documentType'] as String?) ??
+            docTypeKey.replaceAll('_', ' '),
+      );
+      final userName =
+          (docData['studentName'] as String?)?.trim().isNotEmpty == true
+              ? docData['studentName'] as String
+              : (docData['name'] as String?) ?? 'Student';
 
-            // Only add if we haven't already processed a newer submission for this document type
-            bool typeExists = grouped[userName]!.any((s) => s.documentType == documentType);
-            if (!typeExists) {
-              grouped[userName]!.add(submission);
-            }
-          }
+      final submission = Submission.fromMap({
+        ...docData,
+        'name': userName,
+        'studentName': userName,
+        'documentType': documentType,
+        'userId': userId,
+      }, docSnapshot.id);
 
-          _cachedSubmissions = grouped;
-          return grouped;
-        });
+      byUserType.putIfAbsent(userId, () => {});
+      byUserType[userId]!.putIfAbsent(documentType, () => []);
+      byUserType[userId]![documentType]!.add(submission);
+    }
+
+    final Map<String, List<Submission>> grouped = {};
+    byUserType.forEach((userId, typeMap) {
+      final list = <Submission>[];
+      typeMap.forEach((_, uploads) {
+        final latest = uploads.first;
+        final history =
+            uploads.length > 1 ? uploads.sublist(1) : <Submission>[];
+        list.add(latest.copyWith(history: history));
+      });
+      grouped[userId] = list;
+    });
+    return grouped;
   }
 
   Future<void> _refreshData() async {
+    if (_isRefreshing) return;
     setState(() {
       _isRefreshing = true;
+      _streamGeneration++;
+      _submissionsStream = _createSubmissionsStream();
     });
-
     try {
-      final grouped = await _getFilteredGroupedSubmissions().first;
-      if (mounted) {
-        setState(() {
-          _cachedSubmissions = grouped;
-          _isRefreshing = false;
-        });
-      }
+      final grouped = await _submissionsStream.first.timeout(
+        const Duration(seconds: 20),
+      );
+      if (!mounted) return;
+      setState(() {
+        _cachedSubmissions = grouped;
+        _isRefreshing = false;
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isRefreshing = false;
-        });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error refreshing data: $e')));
-      }
+      if (!mounted) return;
+      setState(() => _isRefreshing = false);
+      AppSnackBar.error(context, 'Error refreshing data: $e');
     }
   }
 
-  Stream<int> _getUnreadNotificationsCount() {
-    return FirebaseFirestore.instance
-        .collection('notifications')
-        .doc('admin')
-        .collection('adminNotifications')
-        .where('isRead', isEqualTo: false)
-        .limit(11)
-        .snapshots()
-        .map((snapshot) => snapshot.docs.length);
+  Future<void> _signOut() async {
+    final ok = await AppDialogs.confirmLogout(context);
+    if (!ok || !mounted) return;
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const AuthPage()),
+      (_) => false,
+    );
   }
 
-  @override
-  void dispose() {
-    super.dispose();
+  void _open(Widget page) {
+    Navigator.pop(context); // close drawer when open
+    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  }
+
+  Map<String, List<Submission>> _applyFilters(
+    Map<String, List<Submission>> source,
+  ) {
+    var result = source;
+
+    if (_searchQuery.isNotEmpty) {
+      final q = _searchQuery.toLowerCase();
+      final filtered = <String, List<Submission>>{};
+      result.forEach((userId, submissions) {
+        final name = submissions.isNotEmpty ? submissions.first.name : userId;
+        final email = submissions.isNotEmpty ? submissions.first.email : '';
+        final hit = name.toLowerCase().contains(q) ||
+            email.toLowerCase().contains(q) ||
+            submissions.any((s) => s.documentType.toLowerCase().contains(q));
+        if (hit) filtered[userId] = submissions;
+      });
+      result = filtered;
+    }
+
+    if (_statusFilter != 'All') {
+      final filtered = <String, List<Submission>>{};
+      result.forEach((userId, submissions) {
+        final match =
+            submissions.where((s) => s.status == _statusFilter).toList();
+        if (match.isNotEmpty) filtered[userId] = match;
+      });
+      result = filtered;
+    }
+    return result;
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = _isDarkMode;
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: isDarkMode
-                ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
+    return Stack(
+      children: [
+        AppScaffold(
+          scaffoldKey: _scaffoldKey,
+          title: 'Admin',
+          showBackButton: false,
+          leading: IconButton(
+            icon: const Icon(Icons.menu, color: AppTheme.bgLight),
+            tooltip: 'Menu',
+            onPressed: () => _scaffoldKey.currentState?.openDrawer(),
           ),
-        ),
-        child: SafeArea(
-          child: Stack(
-            children: [
-              Column(
-                children: [
-                  _buildAppBar(),
-                  _buildMenuBar(),
-                  Expanded(
-                    child: RefreshIndicator(
-                      onRefresh: _refreshData,
-                      color: const Color(0xFF415A77),
-                      child: SingleChildScrollView(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        child: Padding(
-                        padding: const EdgeInsets.all(24.0),
-                        child: StreamBuilder<Map<String, List<Submission>>>(
-                          stream: _getFilteredGroupedSubmissions(),
-                          builder: (context, snapshot) {
-                            final groupedList =
-                                snapshot.hasData
-                                    ? snapshot.data!
-                                    : _cachedSubmissions.isNotEmpty
-                                    ? _cachedSubmissions
-                                    : null;
-
-                            if (snapshot.connectionState ==
-                                    ConnectionState.waiting &&
-                                groupedList == null) {
-                              return const Center(
-                                child: CircularProgressIndicator(),
-                              );
-                            }
-
-                            if (snapshot.hasError) {
-                              return Center(
-                                child: Text(
-                                  'Error: ${snapshot.error}',
-                                  style: TextStyle(
-                                    color: isDarkMode
-                                        ? const Color(0xFFB0C4DE)
-                                        : const Color(0xFF6B7280),
-                                  ),
-                                ),
-                              );
-                            }
-
-                            if (groupedList == null || groupedList.isEmpty) {
-                              return Padding(
-                                padding: const EdgeInsets.only(top: 80),
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    Icon(
-                                      Icons.inbox_outlined,
-                                      size: 80,
-                                      color: isDarkMode
-                                          ? const Color(0xFFB0C4DE)
-                                              .withOpacity(0.4)
-                                          : const Color(0xFF415A77)
-                                              .withOpacity(0.3),
-                                    ),
-                                    const SizedBox(height: 16),
-                                    Text(
-                                      'No submissions yet',
-                                      style: TextStyle(
-                                        fontSize: 20,
-                                        fontWeight: FontWeight.bold,
-                                        color: isDarkMode
-                                            ? const Color(0xFFFFFFFF)
-                                            : const Color(0xFF1B263B),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      'Student document uploads will\nappear here for review.',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                        color: isDarkMode
-                                            ? const Color(0xFFB0C4DE)
-                                            : const Color(0xFF6B7280),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }
-
-                            var finalGroupedList = groupedList;
-                            
-                            // Apply Search Filter
-                            if (_searchQuery.isNotEmpty) {
-                              final query = _searchQuery.toLowerCase();
-                              final Map<String, List<Submission>> searchedList = {};
-                              
-                              finalGroupedList.forEach((userName, submissions) {
-                                // Check if user name matches
-                                bool matchesName = userName.toLowerCase().contains(query);
-                                
-                                // Or if any document type matches
-                                bool matchesDoc = submissions.any((s) => s.documentType.toLowerCase().contains(query));
-                                
-                                if (matchesName || matchesDoc) {
-                                  searchedList[userName] = submissions;
-                                }
-                              });
-                              
-                              finalGroupedList = searchedList;
-                            }
-
-                            // Apply Status Filter
-                            if (_statusFilter != 'All') {
-                              final Map<String, List<Submission>> statusFilteredList = {};
-                              
-                              finalGroupedList.forEach((userName, submissions) {
-                                final filtered = submissions.where((s) => s.status == _statusFilter).toList();
-                                if (filtered.isNotEmpty) {
-                                  statusFilteredList[userName] = filtered;
-                                }
-                              });
-                              
-                              finalGroupedList = statusFilteredList;
-                            }
-
-                            final total = finalGroupedList.values.fold(
-                              0,
-                              (sum, list) => sum + list.length,
-                            );
-                            final pending = finalGroupedList.values.fold(
-                              0,
-                              (sum, list) =>
-                                  sum +
-                                  list
-                                      .where((s) => s.status == 'Pending')
-                                      .length,
-                            );
-                            final verified = finalGroupedList.values.fold(
-                              0,
-                              (sum, list) =>
-                                  sum +
-                                  list
-                                      .where((s) => s.status == 'Verified')
-                                      .length,
-                            );
-                            final rejected = finalGroupedList.values.fold(
-                              0,
-                              (sum, list) =>
-                                  sum +
-                                  list
-                                      .where((s) => s.status == 'Rejected')
-                                      .length,
-                            );
-
-                            return Column(
-                              children: [
-                                _buildStats(total, pending, verified, rejected),
-                                const SizedBox(height: 16),
-                                _buildSearchBar(),
-                                const SizedBox(height: 16),
-                                FutureBuilder<Widget>(
-                                  future: _buildSubmissionList(finalGroupedList),
-                                  builder: (context, snapshot) {
-                                    if (snapshot.connectionState ==
-                                        ConnectionState.waiting) {
-                                      return const Center(
-                                        child: CircularProgressIndicator(),
-                                      );
-                                    }
-                                    if (snapshot.hasError) {
-                                      return Center(
-                                        child: Text(
-                                          'Error: ${snapshot.error}',
-                                          style: TextStyle(
-                                            color: isDarkMode
-                                                ? const Color(0xFFB0C4DE)
-                                                : const Color(0xFF6B7280),
-                                          ),
-                                        ),
-                                      );
-                                    }
-                                    return snapshot.data ??
-                                        const SizedBox.shrink();
-                                  },
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                  ),
-                ],
-              ),
-              if (_selectedSubmission != null)
-                SubmissionPopup(
-                  submission: _selectedSubmission!,
-                  onClose: () {
-                    setState(() {
-                      _selectedSubmission = null;
-                    });
-                  },
-                  onUpdateStatus: _updateStatus,
-                ),
-              if (_isLoading)
-                Container(
-                  color: Colors.black54,
-                  child: const Center(
-                    child: CircularProgressIndicator(color: Color(0xFF415A77)),
-                  ),
-                ),
-              if (_isRefreshing)
-                Positioned(
-                  top: 16,
-                  right: 16,
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.black54,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const SizedBox(
-                      width: 24,
-                      height: 24,
+          drawer: _buildDrawer(),
+          actions: [
+            IconButton(
+              tooltip: 'Refresh',
+              onPressed: _isRefreshing ? null : _refreshData,
+              icon: _isRefreshing
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
                       child: CircularProgressIndicator(
-                        color: Color(0xFF415A77),
                         strokeWidth: 2,
+                        color: AppTheme.bgLight,
                       ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAppBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              'ADMIN DASHBOARD',
-              style: TextStyle(
-                color: const Color(0xFFFFFFFF),
-                fontWeight: FontWeight.bold,
-                fontSize: MediaQuery.of(context).size.width < 350 ? 16 : 18,
-                letterSpacing: 1.2,
-              ),
+                    )
+                  : const Icon(Icons.refresh, color: AppTheme.bgLight),
             ),
-          ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              IconButton(
-                icon: Icon(
-                  _isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
-                  color: const Color(0xFFFFFFFF),
-                ),
-                tooltip: "Toggle Theme",
-                iconSize: 20,
-                padding: const EdgeInsets.all(8),
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                onPressed: widget.toggleDarkMode,
-              ),
-              StreamBuilder<int>(
-                stream: _getUnreadNotificationsCount(),
-                builder: (context, snapshot) {
-                  final unreadCount = snapshot.data ?? 0;
-                  return Stack(
-                    children: [
-                      IconButton(
-                        icon: const Icon(
-                          Icons.notifications,
-                          color: Color(0xFFFFFFFF),
-                        ),
-                        iconSize: 20,
-                        padding: const EdgeInsets.all(8),
-                        constraints: const BoxConstraints(
-                          minWidth: 32,
-                          minHeight: 32,
-                        ),
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder:
-                                  (context) => const AdminNotificationsScreen(),
-                            ),
-                          );
-                        },
+            const ThemeToggleButton(color: AppTheme.bgLight),
+            StreamBuilder<int>(
+              stream: _unreadCountStream,
+              builder: (context, snap) {
+                final n = snap.data ?? 0;
+                return Stack(
+                  children: [
+                    IconButton(
+                      tooltip: 'Notifications',
+                      icon: const Icon(
+                        Icons.notifications_outlined,
+                        color: AppTheme.bgLight,
                       ),
-                      if (unreadCount > 0)
-                        Positioned(
-                          right: 6,
-                          top: 6,
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: const BoxDecoration(
-                              color: Colors.red,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Text(
-                              unreadCount > 10 ? '10+' : unreadCount.toString(),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                              ),
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const AdminNotificationsScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                    if (n > 0)
+                      Positioned(
+                        right: 8,
+                        top: 8,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            color: AppTheme.errorRed,
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 16,
+                            minHeight: 16,
+                          ),
+                          child: Text(
+                            n > 9 ? '9+' : '$n',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
-                    ],
-                  );
-                },
-              ),
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.menu, color: Color(0xFFFFFFFF)),
-                iconSize: 20,
-                padding: const EdgeInsets.all(8),
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                onSelected: (value) async {
-                  if (value == 'Sign Out') {
-                    try {
-                      await FirebaseAuth.instance.signOut();
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(
-                          builder:
-                              (context) => AuthPage(
-                                toggleDarkMode: widget.toggleDarkMode,
-                                isDarkMode: _isDarkMode,
+                      ),
+                  ],
+                );
+              },
+            ),
+          ],
+          body: Column(
+            children: [
+              _buildFilterChips(),
+              Expanded(
+                child: RefreshIndicator(
+                  color: AppTheme.primaryMid,
+                  onRefresh: _refreshData,
+                  child: StreamBuilder<Map<String, List<Submission>>>(
+                    key: ValueKey('subs_$_streamGeneration'),
+                    stream: _submissionsStream,
+                    builder: (context, snapshot) {
+                      if (snapshot.hasData) {
+                        _cachedSubmissions = snapshot.data!;
+                      }
+                      final raw = snapshot.hasData
+                          ? snapshot.data!
+                          : _cachedSubmissions;
+
+                      if (snapshot.connectionState == ConnectionState.waiting &&
+                          raw.isEmpty) {
+                        return const AppLoading(message: 'Loading submissions…');
+                      }
+                      if (snapshot.hasError && raw.isEmpty) {
+                        return AppEmptyState.error(
+                          title: 'Could not load submissions',
+                          message: '${snapshot.error}',
+                          onAction: _refreshData,
+                        );
+                      }
+
+                      final filtered = _applyFilters(raw);
+                      if (raw.isEmpty) {
+                        return ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: const [
+                            SizedBox(height: 48),
+                            AppEmptyState(
+                              icon: Icons.inbox_outlined,
+                              title: 'No submissions yet',
+                              message:
+                                  'Student uploads appear here. Pull down to refresh.',
+                            ),
+                          ],
+                        );
+                      }
+
+                      return ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                        children: [
+                          _buildStats(filtered),
+                          const SizedBox(height: 12),
+                          _buildSearchField(),
+                          const SizedBox(height: 16),
+                          if (filtered.isEmpty)
+                            const AppEmptyState(
+                              icon: Icons.filter_list_off,
+                              title: 'No matches',
+                              message: 'Try another search or status filter.',
+                            )
+                          else
+                            ...filtered.entries.map(
+                              (e) => _StudentSubmissionCard(
+                                userId: e.key,
+                                submissions: e.value,
+                                documentTypes: _documentTypes,
+                                onOpen: (s) =>
+                                    setState(() => _selectedSubmission = s),
                               ),
-                        ),
+                            ),
+                        ],
                       );
-                    } catch (e) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Error signing out: $e')),
-                      );
-                    }
-                  } else if (value == 'Trash') {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const AdminTrashScreen(),
-                      ),
-                    );
-                  }
-                },
-                itemBuilder:
-                    (BuildContext context) => <PopupMenuEntry<String>>[
-                      const PopupMenuItem<String>(
-                        value: 'Trash',
-                        child: Text(
-                          'Trash',
-                          style: TextStyle(color: Colors.black),
-                        ),
-                      ),
-                      const PopupMenuItem<String>(
-                        value: 'Sign Out',
-                        child: Text(
-                          'Sign Out',
-                          style: TextStyle(color: Colors.red),
-                        ),
-                      ),
-                    ],
+                    },
+                  ),
+                ),
               ),
             ],
           ),
-        ],
-      ),
+        ),
+        if (_selectedSubmission != null)
+          SubmissionPopup(
+            submission: _selectedSubmission!,
+            onClose: () => setState(() => _selectedSubmission = null),
+            onUpdateStatus: (s, status, {rejectionReason}) => _updateStatus(
+              s,
+              status,
+              rejectionReason: rejectionReason,
+            ),
+          ),
+      ],
     );
   }
 
-  Widget _buildMenuBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
+  Widget _buildDrawer() {
+    final email = FirebaseAuth.instance.currentUser?.email ?? 'Admin';
+    return Drawer(
+      child: AppGradientBody(
+        child: ListView(
+          padding: EdgeInsets.zero,
           children: [
-            _buildMenuItem('All', _statusFilter == 'All', () {
-              setState(() {
-                _statusFilter = 'All';
-              });
+            DrawerHeader(
+              decoration: const BoxDecoration(gradient: AppTheme.appBarGradient),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  const Icon(Icons.admin_panel_settings,
+                      color: Colors.white, size: 36),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Admin',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    email,
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+            // Home is this screen — no redundant "Dashboard" entry.
+            // Notifications live in the app bar (with unread badge).
+            _drawerTile(Icons.folder_outlined, 'Documents', () {
+              _open(const DocumentManagementScreen());
             }),
-            _buildMenuItem('Pending', _statusFilter == 'Pending', () {
-              setState(() {
-                _statusFilter = 'Pending';
-              });
+            _drawerTile(Icons.bar_chart_outlined, 'Reports', () {
+              _open(const ReportGenerationScreen());
             }),
-            _buildMenuItem('Verified', _statusFilter == 'Verified', () {
-              setState(() {
-                _statusFilter = 'Verified';
-              });
+            _drawerTile(Icons.delete_outline, 'Trash', () {
+              _open(const AdminTrashScreen());
             }),
-            _buildMenuItem('Rejected', _statusFilter == 'Rejected', () {
-              setState(() {
-                _statusFilter = 'Rejected';
-              });
+            _drawerTile(Icons.settings_outlined, 'Settings', () {
+              _open(const AdminSettingsScreen());
             }),
+            const Divider(),
+            _drawerTile(Icons.logout, 'Sign out', _signOut, danger: true),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildMenuItem(String title, bool isSelected, VoidCallback onTap) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 8.0),
-      child: ChoiceChip(
-        label: Text(title),
-        selected: isSelected,
-        onSelected: (bool selected) {
-          if (selected) onTap();
+  Widget _drawerTile(
+    IconData icon,
+    String label,
+    VoidCallback onTap, {
+    bool danger = false,
+  }) {
+    final color = danger ? AppTheme.errorRed : null;
+    return ListTile(
+      leading: Icon(icon, color: color),
+      title: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w600)),
+      onTap: onTap,
+    );
+  }
+
+  Widget _buildFilterChips() {
+    const filters = ['All', 'Pending', 'Verified', 'Rejected'];
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return SizedBox(
+      height: 52,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        itemCount: filters.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final f = filters[i];
+          final selected = _statusFilter == f;
+          return FilterChip(
+            label: Text(f),
+            selected: selected,
+            showCheckmark: false,
+            onSelected: (_) => setState(() => _statusFilter = f),
+            selectedColor: AppTheme.primaryMid.withValues(alpha: 0.22),
+            backgroundColor:
+                isDark ? AppTheme.surfaceDarkAlt : AppTheme.bgLight,
+            side: BorderSide(
+              color: selected
+                  ? AppTheme.primaryMid.withValues(alpha: 0.55)
+                  : (isDark
+                      ? AppTheme.accentBlue.withValues(alpha: 0.25)
+                      : AppTheme.primaryMid.withValues(alpha: 0.12)),
+            ),
+            labelStyle: TextStyle(
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              color: selected
+                  ? (isDark ? AppTheme.accentBlue : AppTheme.primaryMid)
+                  : (isDark ? AppTheme.accentBlue : AppTheme.textMuted),
+            ),
+          );
         },
-        selectedColor: _isDarkMode ? const Color(0xFF415A77) : const Color(0xFF415A77).withOpacity(0.15),
-        backgroundColor: _isDarkMode ? const Color(0xFF2A3A5A) : Colors.transparent,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-        ),
-        showCheckmark: false,
-        labelStyle: TextStyle(
-          color: isSelected
-              ? (_isDarkMode ? const Color(0xFFFFFFFF) : const Color(0xFF1B263B))
-              : (_isDarkMode ? const Color(0xFFB0C4DE) : const Color(0xFF6B7280)),
-          fontSize: 14,
-          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+      ),
+    );
+  }
+
+  Widget _buildSearchField() {
+    return AppCard(
+      padding: EdgeInsets.zero,
+      elevation: 0,
+      child: TextField(
+        controller: _searchController,
+        onChanged: (v) => setState(() => _searchQuery = v.trim()),
+        decoration: FormStyles.decoration(
+          context,
+          hintText: 'Search name, email, or document…',
+          prefixIcon: const Icon(Icons.search),
+        ).copyWith(
+          suffixIcon: _searchQuery.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.clear),
+                  onPressed: () {
+                    _searchController.clear();
+                    setState(() => _searchQuery = '');
+                  },
+                ),
         ),
       ),
     );
   }
 
-  Widget _buildStats(int total, int pending, int verified, int rejected) {
-    return Container(
-      decoration: BoxDecoration(
-        color: _isDarkMode
-            ? const Color(0xFF2A3A5A)
-            : const Color(0xFFF5F7FA),
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(_isDarkMode ? 0.3 : 0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _buildStatCard('Total', total, const Color(0xFF415A77)),
-          _buildStatCard('Pending', pending, const Color(0xFFF59E0B)),
-          _buildStatCard('Verified', verified, const Color(0xFF10B981)),
-          _buildStatCard('Rejected', rejected, const Color(0xFFEF4444)),
-        ],
-      ),
-    );
-  }
-
-  // FIX: Upgraded stat card to show colored icon badge for better visual distinction
-  Widget _buildStatCard(String label, int count, Color color) {
-    IconData icon;
-    switch (label) {
-      case 'Pending':
-        icon = Icons.hourglass_top;
-        break;
-      case 'Verified':
-        icon = Icons.check_circle;
-        break;
-      case 'Rejected':
-        icon = Icons.cancel;
-        break;
-      default:
-        icon = Icons.description;
+  Widget _buildStats(Map<String, List<Submission>> grouped) {
+    var total = 0, pending = 0, verified = 0, rejected = 0;
+    for (final list in grouped.values) {
+      for (final s in list) {
+        total++;
+        switch (s.status) {
+          case 'Pending':
+            pending++;
+            break;
+          case 'Verified':
+            verified++;
+            break;
+          case 'Rejected':
+            rejected++;
+            break;
+        }
+      }
     }
-    return Column(
-      children: [
-        Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.15),
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Icon(icon, color: color, size: 22),
-          ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          count.toString(),
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            color: _isDarkMode
-                ? const Color(0xFFB0C4DE)
-                : const Color(0xFF6B7280),
-          ),
-        ),
-      ],
-    );
-  }
 
-  Widget _buildSearchBar() {
-    return TextField(
-      onChanged: (value) {
-        setState(() {
-          _searchQuery = value;
-        });
-      },
-      decoration: InputDecoration(
-        hintText: 'Search by name or document',
-        hintStyle: TextStyle(
-          color: _isDarkMode
-              ? const Color(0xFFB0C4DE)
-              : const Color(0xFF6B7280),
-        ),
-        prefixIcon: Icon(
-          Icons.search,
-          color: _isDarkMode
-              ? const Color(0xFFB0C4DE)
-              : const Color(0xFF6B7280),
-        ),
-        filled: true,
-        fillColor: _isDarkMode
-            ? const Color(0xFF3B4A6B)
-            : const Color(0xFFF5F7FA),
-        border: const OutlineInputBorder(
-          borderRadius: BorderRadius.all(Radius.circular(12)),
-          borderSide: BorderSide.none,
-        ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      ),
-      style: TextStyle(
-        color: _isDarkMode
-            ? const Color(0xFFFFFFFF)
-            : const Color(0xFF1B263B),
-      ),
-    );
-  }
-
-  Future<Widget> _buildSubmissionList(
-    Map<String, List<Submission>> groupedList,
-  ) async {
-    final filteredList =
-        groupedList.entries.where((entry) {
-          final name = entry.key.toLowerCase();
-          final submissions = entry.value;
-          if (_searchQuery.isEmpty) return true;
-          final query = _searchQuery.toLowerCase();
-          return name.contains(query) ||
-              submissions.any(
-                (s) => s.documentType.toLowerCase().contains(query),
-              );
-        }).toList();
-
-    if (filteredList.isEmpty) {
-      return Center(
-        child: Text(
-          'No submissions found.',
-          style: TextStyle(
-            color: _isDarkMode
-                ? const Color(0xFFB0C4DE)
-                : const Color(0xFF6B7280),
+    Widget cell(String label, int n, Color c, IconData icon) {
+      return Expanded(
+        child: AppCard(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+          elevation: 0,
+          child: Column(
+            children: [
+              Icon(icon, color: c, size: 22),
+              const SizedBox(height: 6),
+              Text(
+                '$n',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: c,
+                ),
+              ),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? AppTheme.accentBlue
+                      : AppTheme.textMuted,
+                ),
+              ),
+            ],
           ),
         ),
       );
     }
 
-    return ListView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      itemCount: filteredList.length,
-      itemBuilder: (context, index) {
-        final name = filteredList[index].key;
-        final submissions =
-            filteredList[index].value
-                .where(
-                  (s) => _statusFilter == 'All' || s.status == _statusFilter,
-                )
-                .toList();
-        if (submissions.isEmpty) return const SizedBox.shrink();
+    return Row(
+      children: [
+        cell('Total', total, AppTheme.primaryMid, Icons.folder_outlined),
+        const SizedBox(width: 8),
+        cell('Pending', pending, AppTheme.warningAmber, Icons.pending_actions),
+        const SizedBox(width: 8),
+        cell('Verified', verified, AppTheme.successGreen, Icons.check_circle_outline),
+        const SizedBox(width: 8),
+        cell('Rejected', rejected, AppTheme.errorRed, Icons.cancel_outlined),
+      ],
+    );
+  }
+}
 
-        final uploadedCount =
-            submissions.where((s) => s.status != 'Not Submitted').length;
-        final totalDocs = _documentTypes.length;
+/// Student card with compact doc chips (icon + name + status colour).
+class _StudentSubmissionCard extends StatelessWidget {
+  final String userId;
+  final List<Submission> submissions;
+  final List<String> documentTypes;
+  final ValueChanged<Submission> onOpen;
 
-        return Container(
-          margin: const EdgeInsets.only(bottom: 16),
-          decoration: BoxDecoration(
-            color: _isDarkMode
-                ? const Color(0xFF2A3A5A)
-                : Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(_isDarkMode ? 0.3 : 0.1),
-                blurRadius: 10,
-                offset: const Offset(0, 5),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  const _StudentSubmissionCard({
+    required this.userId,
+    required this.submissions,
+    required this.documentTypes,
+    required this.onOpen,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final muted = isDark ? AppTheme.accentBlue : AppTheme.textMuted;
+    final name = submissions.isNotEmpty ? submissions.first.name : 'Student';
+    final email = submissions.isNotEmpty ? submissions.first.email : '';
+    final uploaded =
+        submissions.where((s) => s.status != 'Not Submitted').length;
+
+    return AppCard(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
+              CircleAvatar(
+                radius: 18,
+                backgroundColor: AppTheme.primaryMid.withValues(alpha: 0.15),
+                child: Text(
+                  name.isNotEmpty ? name[0].toUpperCase() : '?',
+                  style: const TextStyle(
+                    color: AppTheme.primaryMid,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    CircleAvatar(
-                      backgroundColor: const Color(0xFF415A77).withOpacity(0.3),
-                      child: const Icon(Icons.person, color: Color(0xFFFFFFFF)),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            name,
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                              color: _isDarkMode
-                                  ? const Color(0xFFFFFFFF)
-                                  : const Color(0xFF1B263B),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '$uploadedCount/$totalDocs documents uploaded',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: _isDarkMode
-                                  ? const Color(0xFFB0C4DE)
-                                  : const Color(0xFF6B7280),
-                            ),
-                          ),
-                        ],
+                    Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
                       ),
                     ),
+                    if (email.isNotEmpty)
+                      Text(
+                        email,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, color: muted),
+                      ),
                   ],
                 ),
               ),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: _isDarkMode
-                      ? const Color(0xFF3B4A6B)
-                      : const Color(0xFFF5F7FA),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children:
-                      _documentTypes.map((docType) {
-                        final submission = submissions.firstWhere(
-                          (s) => s.documentType == docType,
-                          orElse:
-                              () => Submission(
-                                id: 'temp_${name}_$docType',
-                                name: name,
-                                documentType: docType,
-                                status: 'Not Submitted',
-                                submittedAt: Timestamp.now(),
-                                details: {},
-                                similarity: 0.0,
-                                verifiedFields: {},
-                              ),
-                        );
-
-                        return _buildDocumentCard(submission);
-                      }).toList(),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildDocumentCard(Submission submission) {
-    final Color statusColor = _getStatusColor(submission.status);
-    String? detailText;
-    List<Widget>? verificationDetails;
-    bool isHovered = false;
-
-    if (submission.documentType == 'Aadhar Card' &&
-        submission.status != 'Not Submitted') {
-      final details = submission.details['verificationDetails'];
-      if (details != null) {
-        final aadharNumber = details['aadharNumber']?['matchedText'] ?? '';
-        final name = details['name']?['matched'] ?? false;
-        final dob = details['dob']?['matched'] ?? false;
-        final aadharMatched = details['aadharNumber']?['matched'] ?? false;
-
-        detailText =
-            aadharNumber.isNotEmpty
-                ? '**** **** ${aadharNumber.replaceAll(' ', '').substring(8)}'
-                : null;
-
-        verificationDetails = [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                name ? Icons.check_circle : Icons.error,
-                color: name ? Colors.green : Colors.red,
-                size: 6,
-              ),
-              const SizedBox(width: 2),
               Text(
-                'Name',
+                '$uploaded/${documentTypes.length}',
                 style: TextStyle(
-                  fontSize: 6,
-                  color: name ? Colors.green : Colors.red,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: muted,
                 ),
               ),
             ],
           ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                dob ? Icons.check_circle : Icons.error,
-                color: dob ? Colors.green : Colors.red,
-                size: 6,
-              ),
-              const SizedBox(width: 2),
-              Text(
-                'DOB',
-                style: TextStyle(
-                  fontSize: 6,
-                  color: dob ? Colors.green : Colors.red,
-                ),
-              ),
-            ],
-          ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                aadharMatched ? Icons.check_circle : Icons.error,
-                color: aadharMatched ? Colors.green : Colors.red,
-                size: 6,
-              ),
-              const SizedBox(width: 2),
-              Text(
-                'No.',
-                style: TextStyle(
-                  fontSize: 6,
-                  color: aadharMatched ? Colors.green : Colors.red,
-                ),
-              ),
-            ],
-          ),
-        ];
-      }
-    } else if (submission.documentType == 'Voter ID') {
-      detailText =
-          submission.status != 'Not Submitted' &&
-                  submission.verifiedFields['voterId'] != null
-              ? '**** **** ${submission.verifiedFields['voterId']!.substring(submission.verifiedFields['voterId']!.length - 4)}'
-              : null;
-    } else if (submission.documentType == '10th Marksheet' ||
-        submission.documentType == '12th Marksheet') {
-      detailText =
-          submission.status != 'Not Submitted' &&
-                  submission.verifiedFields['percentage'] != null
-              ? '${submission.verifiedFields['percentage']}%'
-              : null;
-    }
-
-    return StatefulBuilder(
-      builder: (context, setState) {
-        return MouseRegion(
-          onEnter: (_) => setState(() => isHovered = true),
-          onExit: (_) => setState(() => isHovered = false),
-          child: GestureDetector(
-            onTap: () {
-              this.setState(() {
-                _selectedSubmission = submission;
-              });
+          const SizedBox(height: 10),
+          // Compact 2×2 chips — no heavy thumbnails on the list.
+          LayoutBuilder(
+            builder: (context, c) {
+              const gap = 6.0;
+              final w = (c.maxWidth - gap) / 2;
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: documentTypes.map((docType) {
+                  Submission? s;
+                  for (final x in submissions) {
+                    if (x.documentType == docType) {
+                      s = x;
+                      break;
+                    }
+                  }
+                  return SizedBox(
+                    width: w,
+                    child: _DocChip(
+                      title: docType,
+                      submission: s,
+                      onTap: s == null || s.status == 'Not Submitted'
+                          ? null
+                          : () => onOpen(s!),
+                    ),
+                  );
+                }).toList(),
+              );
             },
-            child: Stack(
-              children: [
-                Container(
-                  width: 60,
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: _isDarkMode
-                        ? const Color(0xFF2A3A5A)
-                        : Colors.white,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: statusColor.withOpacity(0.3),
-                      width: 2,
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        _getDocumentIcon(submission.documentType),
-                        color:
-                            submission.status == 'Not Submitted'
-                                ? (_isDarkMode
-                                        ? const Color(0xFFB0C4DE)
-                                        : const Color(0xFF6B7280))
-                                    .withOpacity(0.5)
-                                : statusColor,
-                        size: 20,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        submission.documentType.split(' ')[0],
-                        style: TextStyle(
-                          fontSize: 10,
-                          color:
-                              submission.status == 'Not Submitted'
-                                  ? (_isDarkMode
-                                      ? const Color(0xFFB0C4DE)
-                                      : const Color(0xFF6B7280))
-                                  : (_isDarkMode
-                                      ? const Color(0xFFFFFFFF)
-                                      : const Color(0xFF1B263B)),
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      if (submission.status != 'Not Submitted') ...[
-                        const SizedBox(height: 4),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: statusColor.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            '${submission.similarity.toStringAsFixed(0)}%',
-                            style: TextStyle(
-                              color: statusColor,
-                              fontSize: 8,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                      if (detailText != null) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          detailText,
-                          style: TextStyle(
-                            fontSize: 8,
-                            color: _isDarkMode
-                                ? const Color(0xFFB0C4DE)
-                                : const Color(0xFF6B7280),
-                          ),
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                      if (verificationDetails != null) ...[
-                        const SizedBox(height: 4),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: verificationDetails,
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                if (isHovered && submission.status == 'Pending')
-                  Positioned.fill(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.7),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          IconButton(
-                            icon: const Icon(
-                              Icons.check_circle,
-                              color: Colors.green,
-                            ),
-                            iconSize: 20,
-                            onPressed: () {
-                              _updateStatus(submission, 'Verified');
-                            },
-                          ),
-                          const SizedBox(height: 4),
-                          IconButton(
-                            icon: const Icon(Icons.cancel, color: Colors.red),
-                            iconSize: 20,
-                            onPressed: () {
-                              _updateStatus(submission, 'Rejected');
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
           ),
-        );
-      },
+        ],
+      ),
     );
   }
+}
 
-  IconData _getDocumentIcon(String documentType) {
+/// Compact doc row: coloured icon + short name + status.
+class _DocChip extends StatelessWidget {
+  final String title;
+  final Submission? submission;
+  final VoidCallback? onTap;
+
+  const _DocChip({
+    required this.title,
+    required this.submission,
+    this.onTap,
+  });
+
+  static String _shortLabel(String title) {
+    switch (title) {
+      case AppConstants.docAadhar:
+        return 'Aadhaar';
+      case AppConstants.docVoterId:
+        return 'Voter ID';
+      case AppConstants.docTenth:
+        return '10th';
+      case AppConstants.docTwelfth:
+        return '12th';
+      default:
+        return title
+            .replaceAll(' Marksheet', '')
+            .replaceAll(' Card', '');
+    }
+  }
+
+  static IconData _iconFor(String documentType) {
     switch (documentType.toLowerCase()) {
       case 'aadhar card':
         return Icons.credit_card;
       case 'voter id':
         return Icons.how_to_vote;
       case '10th marksheet':
+        return Icons.menu_book_outlined;
       case '12th marksheet':
-        return Icons.school;
+        return Icons.school_outlined;
       default:
-        return Icons.description;
+        return Icons.description_outlined;
     }
   }
 
-  Color _getStatusColor(String status) {
-    switch (status) {
-      case 'Verified':
-        return Colors.green;
-      case 'Rejected':
-        return Colors.red;
-      case 'Pending':
-        return Colors.orange;
-      default:
-        return const Color(0xFF6B7280);
-    }
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final status = submission?.status ?? 'Not Submitted';
+    final color = StatusBadge.colorFor(status);
+    final short = _shortLabel(title);
+    final canOpen = onTap != null;
+
+    return Material(
+      color: color.withValues(alpha: isDark ? 0.14 : 0.08),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Container(
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: color.withValues(alpha: 0.4)),
+          ),
+          child: Row(
+            children: [
+              Icon(_iconFor(title), size: 18, color: color),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  short,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                    color: canOpen
+                        ? null
+                        : (isDark ? AppTheme.accentBlue : AppTheme.textMuted),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                status == 'Not Submitted'
+                    ? '—'
+                    : status == 'Verified'
+                        ? 'Verified'
+                        : status == 'Rejected'
+                            ? 'Rejected'
+                            : 'Pending',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

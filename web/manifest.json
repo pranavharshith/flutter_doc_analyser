@@ -1,13 +1,13 @@
 {
-    "name": "my_app",
-    "short_name": "my_app",
+    "name": "Vortex",
+    "short_name": "Vortex",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#F5F7FA",
+    "theme_color": "#415A77",
+    "description": "Vortex mobile document verification — web is not a supported target.",
     "orientation": "portrait-primary",
-    "prefer_related_applications": false,
+    "prefer_related_applications": true,
     "icons": [
         {
             "src": "icons/Icon-192.png",

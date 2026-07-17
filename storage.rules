@@ -1,0 +1,50 @@
+rules_version = '2';
+
+// Vortex Dashboard — Firebase Storage security rules.
+//
+// DEPLOY: firebase deploy --only storage --project fire-setup-33812
+//
+// Why these rules are structured this way:
+//   • getDownloadURL() returns a token-based URL (?alt=media&token=…).
+//     Anyone who has that URL can fetch the file via Image.network() without
+//     extra auth headers — the token IS the authorisation.  So we only need
+//     write rules to protect uploads; the admin can view any document image
+//     as long as the Firestore document (which only admin can read) contains
+//     the URL.
+//   • We allow any authenticated user to read their own files for offline
+//     caching; cross-student reads are handled via token URLs stored in
+//     Firestore (which already has per-role security rules).
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Profile images ────────────────────────────────────────────────
+    // Any signed-in user can read profile images (shown in admin dashboard).
+    // Only the owner can write.
+    match /profile_images/{userId}.jpg {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+                   && request.auth.uid == userId
+                   && request.resource.size < 5 * 1024 * 1024  // 5 MB max
+                   && request.resource.contentType.matches('image/.*');
+    }
+
+    // ── Document uploads ──────────────────────────────────────────────
+    // Path: documents/{userId}/{docType}/{fileName}
+    // Owner can write; owner can read their own files.
+    // Admin can read via the token URL stored in Firestore — no explicit
+    // admin rule needed here because the download URL already carries a
+    // cryptographic token.
+    match /documents/{userId}/{docType}/{fileName} {
+      allow read:  if request.auth != null
+                   && request.auth.uid == userId;
+      allow write: if request.auth != null
+                   && request.auth.uid == userId
+                   && request.resource.size < 20 * 1024 * 1024  // 20 MB max
+                   && (request.resource.contentType.matches('image/.*')
+                       || request.resource.contentType == 'application/pdf');
+      allow delete: if request.auth != null
+                    && request.auth.uid == userId;
+    }
+  }
+}

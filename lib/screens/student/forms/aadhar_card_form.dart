@@ -4,17 +4,17 @@ import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '/screens/student/upload_document_screen.dart';
+import '/ui/ui.dart';
+import '/utils/app_constants.dart';
+import '/utils/app_snackbar.dart';
+import '/utils/document_validators.dart';
 
 class AadharCardForm extends StatefulWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
   // FIX: Added onTabChange for consistency with VoterIdForm
   final void Function(int)? onTabChange;
 
   const AadharCardForm({
     super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
     this.onTabChange, // optional — caller may provide it
   });
 
@@ -33,144 +33,100 @@ class _AadharCardFormState extends State<AadharCardForm> {
   String? _selectedGender;
   String? _selectedState;
 
-  static const List<String> _states = [
-    "Andhra Pradesh",
-    "Bihar",
-    "Delhi",
-    "Gujarat",
-    "Karnataka",
-    "Kerala",
-    "Maharashtra",
-    "Rajasthan",
-    "Tamil Nadu",
-    "Telangana",
-    "Uttar Pradesh",
-    "West Bengal",
-  ];
+  static const List<String> _states = AppConstants.indianStatesAndUTs;
 
   Future<void> _selectDate(BuildContext context) async {
     final picked = await showDatePicker(
       context: context,
       initialDate: DateTime(2000),
       firstDate: DateTime(1950),
-      lastDate: DateTime.now(),
-    );
+      lastDate: DateTime.now());
     if (picked != null) {
       _dobController.text = DateFormat('dd/MM/yyyy').format(picked);
     }
   }
 
   bool _isValidName(String name) => RegExp(r'^[a-zA-Z\s]+$').hasMatch(name);
-  bool _isValidAadhar(String aadhar) =>
-      RegExp(r'^\d{4}\s\d{4}\s\d{4}$').hasMatch(aadhar);
+
+  /// Format + Verhoeff check-digit (structural validity, not UIDAI lookup).
+  bool _isValidAadhar(String aadhar) {
+    if (!RegExp(r'^\d{4}\s\d{4}\s\d{4}$').hasMatch(aadhar.trim())) {
+      return false;
+    }
+    return DocumentValidators.validateAadhaar(aadhar);
+  }
 
   Future<void> _saveToFirebase() async {
     if (!_formKey.currentState!.validate()) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+    setState(() => _isLoading = true);
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('User not logged in')));
-      setState(() {
-        _isLoading = false;
-      });
+      AppSnackBar.error(context, 'User not logged in');
+      setState(() => _isLoading = false);
       return;
     }
 
     try {
       final aadharNumber = _aadharController.text.trim();
-      final data = {
+      final aadharDigits = aadharNumber.replaceAll(' ', '');
+      final documentName = _nameController.text.trim();
+      final expectedValues = <String, String>{
         'aadharNumber': aadharNumber,
-        'aadharLast4': aadharNumber.replaceAll(' ', '').substring(8),
-        'name': _nameController.text.trim(),
+        'name': documentName,
         'dob': _dobController.text.trim(),
-        'gender': _selectedGender,
+        'gender': _selectedGender ?? '',
         'address': _addressController.text.trim(),
-        'state': _selectedState,
-        'timestamp': FieldValue.serverTimestamp(),
-        'status': 'Pending',
+        'state': _selectedState ?? '',
       };
 
-      // Save user details
-      await FirebaseFirestore.instance.collection('students').doc(user.uid).set(
-        {'name': _nameController.text.trim()},
-        SetOptions(merge: true),
-      );
-
-      // Save Aadhar details
+      // SUB-01: form draft only — no uploads/* row and no admin notify until
+      // the student finishes image OCR upload in UploadDocumentScreen.
       await FirebaseFirestore.instance
           .collection('students')
           .doc(user.uid)
           .collection('documents')
           .doc('aadhar_card')
           .set({
-            'name': _nameController.text.trim(),
-            'timestamp': FieldValue.serverTimestamp(),
-            'locked': false,
-          });
+        'documentName': documentName,
+        // SEC-02: do not persist full Aadhaar on the draft — last4 + hash only.
+        'formDraft': {
+          'name': documentName,
+          'dob': expectedValues['dob'],
+          'gender': expectedValues['gender'],
+          'address': expectedValues['address'],
+          'state': expectedValues['state'],
+          'aadharLast4': aadharDigits.length >= 4
+              ? aadharDigits.substring(aadharDigits.length - 4)
+              : '',
+          'aadharHash': DocumentValidators.hashDocumentNumber(aadharNumber),
+        },
+        'formSavedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        // Do not set status Pending here — that means a real upload exists.
+        'locked': false,
+      }, SetOptions(merge: true));
 
-      await FirebaseFirestore.instance
-          .collection('students')
-          .doc(user.uid)
-          .collection('documents')
-          .doc('aadhar_card')
-          .collection('uploads')
-          .add(data);
+      if (!mounted) return;
+      AppSnackBar.success(context, 'Details saved — continue to upload photo');
 
-      // Send notification to admin
-      await FirebaseFirestore.instance
-          .collection('notifications')
-          .doc('admin')
-          .collection('adminNotifications')
-          .add({
-            'message':
-                '${_nameController.text.trim()} has submitted Aadhar details',
-            'documentType': 'Aadhar Card',
-            'userId': user.uid,
-            'userName': _nameController.text.trim(),
-            'timestamp': FieldValue.serverTimestamp(),
-            'type': 'admin',
-            'isRead': false,
-          });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Aadhar details saved successfully')),
-      );
-
-      // Navigate to UploadDocumentScreen
-      Navigator.push(
+      await Navigator.push(
         context,
         MaterialPageRoute(
-          builder:
-              (context) => UploadDocumentScreen(
-                title: 'Aadhar Card',
-                toggleDarkMode: widget.toggleDarkMode,
-                isDarkMode: widget.isDarkMode,
-                expectedValues: {
-                  'aadharNumber': aadharNumber,
-                  'name': _nameController.text.trim(),
-                  'dob': _dobController.text.trim(),
-                  'gender': _selectedGender ?? '',
-                  'address': _addressController.text.trim(),
-                  'state': _selectedState ?? '',
-                },
-                essentialFields: ['aadharNumber', 'name', 'dob', 'gender'],
-              ),
+          builder: (_) => UploadDocumentScreen(
+            title: 'Aadhar Card',
+            expectedValues: expectedValues,
+            essentialFields: const ['aadharNumber', 'name', 'dob', 'gender'],
+          ),
         ),
       );
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to save: $e')));
+      if (mounted) {
+        AppSnackBar.error(context, 'Failed to save. Please try again.');
+      }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -187,368 +143,181 @@ class _AadharCardFormState extends State<AadharCardForm> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors:
-                widget.isDarkMode
-                    ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                    : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildAppBar(),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24.0),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color:
-                            widget.isDarkMode
-                                ? const Color(0xFF2A3A5A)
-                                : const Color(0xFFFFFFFF),
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(
-                              widget.isDarkMode ? 0.3 : 0.1,
-                            ),
-                            blurRadius: 10,
-                            offset: const Offset(0, 5),
-                          ),
-                        ],
-                      ),
-                      padding: const EdgeInsets.all(16.0),
-                      child: Form(
-                        key: _formKey,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            _buildFieldLabel("Aadhar Number"),
-                            const SizedBox(height: 8),
-                            TextFormField(
-                              controller: _aadharController,
-                              keyboardType: TextInputType.number,
-                              inputFormatters: [
-                                FilteringTextInputFormatter.digitsOnly,
-                                LengthLimitingTextInputFormatter(14),
-                                _AadharNumberInputFormatter(),
-                              ],
-                              style: TextStyle(
-                                color: widget.isDarkMode
-                                    ? const Color(0xFFFFFFFF)
-                                    : const Color(0xFF1B263B),
-                              ),
-                              decoration: _buildInputDecoration(
-                                hintText: "Aadhar Number (XXXX XXXX XXXX)",
-                              ),
-                              validator:
-                                  (value) =>
-                                      _isValidAadhar(value ?? '')
-                                          ? null
-                                          : "Enter valid Aadhar number (XXXX XXXX XXXX)",
-                            ),
-                            _spacing(),
-                            _buildFieldLabel("Name"),
-                            const SizedBox(height: 8),
-                            TextFormField(
-                              controller: _nameController,
-                              style: TextStyle(
-                                color: widget.isDarkMode
-                                    ? const Color(0xFFFFFFFF)
-                                    : const Color(0xFF1B263B),
-                              ),
-                              decoration: _buildInputDecoration(
-                                hintText: "Enter name",
-                              ),
-                              validator:
-                                  (value) =>
-                                      _isValidName(value ?? '')
-                                          ? null
-                                          : "Name should contain only letters",
-                            ),
-                            _spacing(),
-                            _buildFieldLabel("Date of Birth"),
-                            const SizedBox(height: 8),
-                            GestureDetector(
-                              onTap: () => _selectDate(context),
-                              child: AbsorbPointer(
-                                child: TextFormField(
-                                  controller: _dobController,
-                                  style: TextStyle(
-                                    color: widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                                  ),
-                                  decoration: _buildInputDecoration(
-                                    hintText: "DD/MM/YYYY",
-                                    suffixIcon: Icon(
-                                      Icons.calendar_month,
-                                      color: widget.isDarkMode
-                                          ? const Color(0xFFB0C4DE)
-                                          : const Color(0xFF1B263B),
-                                    ),
-                                  ),
-                                  validator:
-                                      (value) =>
-                                          value?.isEmpty ?? true
-                                              ? 'Select Date of Birth'
-                                              : null,
-                                ),
-                              ),
-                            ),
-                            _spacing(),
-                            _buildFieldLabel("Gender"),
-                            const SizedBox(height: 8),
-                            DropdownButtonFormField<String>(
-                              value: _selectedGender,
-                              decoration: _buildInputDecoration(),
-                              dropdownColor: widget.isDarkMode
-                                  ? const Color(0xFF2A3A5A)
-                                  : const Color(0xFFFFFFFF),
-                              items:
-                                  ["Male", "Female", "Other"]
-                                      .map(
-                                        (g) => DropdownMenuItem(
-                                          value: g,
-                                          child: Text(
-                                            g,
-                                            style: TextStyle(
-                                              color: widget.isDarkMode
-                                                  ? const Color(0xFFFFFFFF)
-                                                  : const Color(0xFF1B263B),
-                                            ),
-                                          ),
-                                        ),
-                                      )
-                                      .toList(),
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedGender = value;
-                                });
-                              },
-                              validator:
-                                  (value) =>
-                                      value == null ? 'Select gender' : null,
-                              style: TextStyle(
-                                color: widget.isDarkMode
-                                    ? const Color(0xFFFFFFFF)
-                                    : const Color(0xFF1B263B),
-                              ),
-                              icon: Icon(
-                                Icons.arrow_drop_down,
-                                color: widget.isDarkMode
-                                    ? const Color(0xFFB0C4DE)
-                                    : const Color(0xFF1B263B),
-                              ),
-                            ),
-                            _spacing(),
-                            _buildFieldLabel("Address"),
-                            const SizedBox(height: 8),
-                            TextFormField(
-                              controller: _addressController,
-                              style: TextStyle(
-                                color: widget.isDarkMode
-                                    ? const Color(0xFFFFFFFF)
-                                    : const Color(0xFF1B263B),
-                              ),
-                              decoration: _buildInputDecoration(
-                                hintText: "Enter address",
-                              ),
-                              maxLines: 3,
-                              validator:
-                                  (value) =>
-                                      value?.isEmpty ?? true
-                                          ? 'Enter address'
-                                          : null,
-                            ),
-                            _spacing(),
-                            _buildFieldLabel("State"),
-                            const SizedBox(height: 8),
-                            DropdownButtonFormField<String>(
-                              value: _selectedState,
-                              decoration: _buildInputDecoration(),
-                              dropdownColor: widget.isDarkMode
-                                  ? const Color(0xFF2A3A5A)
-                                  : const Color(0xFFFFFFFF),
-                              items:
-                                  _states
-                                      .map(
-                                        (s) => DropdownMenuItem(
-                                          value: s,
-                                          child: Text(
-                                            s,
-                                            style: TextStyle(
-                                              color: widget.isDarkMode
-                                                  ? const Color(0xFFFFFFFF)
-                                                  : const Color(0xFF1B263B),
-                                            ),
-                                          ),
-                                        ),
-                                      )
-                                      .toList(),
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedState = value;
-                                });
-                              },
-                              validator:
-                                  (value) =>
-                                      value == null ? 'Select state' : null,
-                              style: TextStyle(
-                                color: widget.isDarkMode
-                                    ? const Color(0xFFFFFFFF)
-                                    : const Color(0xFF1B263B),
-                              ),
-                              icon: Icon(
-                                Icons.arrow_drop_down,
-                                color: widget.isDarkMode
-                                    ? const Color(0xFFB0C4DE)
-                                    : const Color(0xFF1B263B),
-                              ),
-                            ),
-                            _spacing(),
-                            _buildSubmitButton(),
-                          ],
+    final fieldStyle = FormStyles.fieldText(context);
+    final iconColor = FormStyles.muted(context);
+    final dropdownBg = FormStyles.dropdownBg(context);
+
+    return AppScaffold(
+      title: 'Aadhar Details',
+      body: Column(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
+              child: AppCard(
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                const WizardStepper(currentStep: 0),
+                _buildFieldLabel("Aadhar Number"),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _aadharController,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(14),
+                    _AadharNumberInputFormatter(),
+                  ],
+                  style: fieldStyle,
+                  decoration: _buildInputDecoration(
+                    hintText: "Aadhar Number (XXXX XXXX XXXX)",
+                  ),
+                  validator: (value) {
+                    final v = (value ?? '').trim();
+                    if (!RegExp(r'^\d{4}\s\d{4}\s\d{4}$').hasMatch(v)) {
+                      return 'Enter Aadhar as XXXX XXXX XXXX';
+                    }
+                    if (!_isValidAadhar(v)) {
+                      return 'Invalid Aadhar number (check digit failed)';
+                    }
+                    return null;
+                  },
+                ),
+                _spacing(),
+                _buildFieldLabel("Name"),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _nameController,
+                  style: fieldStyle,
+                  decoration: _buildInputDecoration(hintText: "Enter name"),
+                  validator: (value) => _isValidName(value ?? '')
+                      ? null
+                      : "Name should contain only letters",
+                ),
+                _spacing(),
+                _buildFieldLabel("Date of Birth"),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () => _selectDate(context),
+                  child: AbsorbPointer(
+                    child: TextFormField(
+                      controller: _dobController,
+                      style: fieldStyle,
+                      decoration: _buildInputDecoration(
+                        hintText: "DD/MM/YYYY",
+                        suffixIcon: Icon(
+                          Icons.calendar_month,
+                          color: iconColor,
                         ),
                       ),
+                      validator: (value) => value?.isEmpty ?? true
+                          ? 'Select Date of Birth'
+                          : null,
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFieldLabel(String label) {
-    return Text(
-      label,
-      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-        fontWeight: FontWeight.bold,
-        color: widget.isDarkMode
-            ? const Color(0xFFFFFFFF)
-            : const Color(0xFF1B263B),
-      ),
-    );
-  }
-
-  InputDecoration _buildInputDecoration({
-    String? hintText,
-    Widget? suffixIcon,
-  }) {
-    return InputDecoration(
-      hintText: hintText,
-      hintStyle: TextStyle(
-        color: widget.isDarkMode
-            ? const Color(0xFFB0C4DE)
-            : const Color(0xFF6B7280),
-      ),
-      suffixIcon: suffixIcon,
-      filled: true,
-      fillColor: widget.isDarkMode
-          ? const Color(0xFF3B4A6B)
-          : const Color(0xFFE6E9EF),
-      border: const OutlineInputBorder(
-        borderRadius: BorderRadius.all(Radius.circular(12)),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: const BorderRadius.all(Radius.circular(12)),
-        borderSide: widget.isDarkMode
-            ? const BorderSide(color: Color(0xFFB0C4DE), width: 1.0)
-            : BorderSide.none,
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: const BorderRadius.all(Radius.circular(12)),
-        borderSide: widget.isDarkMode
-            ? const BorderSide(color: Color(0xFFB0C4DE), width: 1.0)
-            : BorderSide.none,
-      ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-    );
-  }
-
-  Widget _buildAppBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back, color: Colors.white),
-                onPressed: () => Navigator.pop(context),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                'AADHAR DETAILS',
-                style: TextStyle(
-                  color: Color(0xFFFFFFFF),
-                  fontWeight: FontWeight.bold,
-                  fontSize: 28,
-                  letterSpacing: 1.5,
+                _spacing(),
+                _buildFieldLabel("Gender"),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  value: _selectedGender,
+                  decoration: _buildInputDecoration(),
+                  dropdownColor: dropdownBg,
+                  items: ["Male", "Female", "Other"]
+                      .map(
+                        (g) => DropdownMenuItem(
+                          value: g,
+                          child: Text(g, style: fieldStyle),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedGender = value;
+                    });
+                  },
+                  validator: (value) =>
+                      value == null ? 'Select gender' : null,
+                  style: fieldStyle,
+                  icon: Icon(Icons.arrow_drop_down, color: iconColor),
+                ),
+                _spacing(),
+                _buildFieldLabel("Address"),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _addressController,
+                  style: fieldStyle,
+                  decoration: _buildInputDecoration(hintText: "Enter address"),
+                  maxLines: 3,
+                  validator: (value) =>
+                      value?.isEmpty ?? true ? 'Enter address' : null,
+                ),
+                _spacing(),
+                _buildFieldLabel("State"),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  value: _selectedState,
+                  decoration: _buildInputDecoration(),
+                  dropdownColor: dropdownBg,
+                  items: _states
+                      .map(
+                        (s) => DropdownMenuItem(
+                          value: s,
+                          child: Text(s, style: fieldStyle),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedState = value;
+                    });
+                  },
+                  validator: (value) =>
+                      value == null ? 'Select state' : null,
+                  style: fieldStyle,
+                  icon: Icon(Icons.arrow_drop_down, color: iconColor),
+                ),
+                    ],
+                  ),
                 ),
               ),
-            ],
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: _buildSubmitButton(),
+            ),
           ),
         ],
       ),
     );
   }
 
+  Widget _buildFieldLabel(String label) {
+    return Text(label, style: FormStyles.labelText(context));
+  }
+
+  InputDecoration _buildInputDecoration({
+    String? hintText,
+    Widget? suffixIcon,
+  }) {
+    return FormStyles.decoration(
+      context,
+      hintText: hintText,
+      suffixIcon: suffixIcon,
+    );
+  }
+
   Widget _buildSubmitButton() {
-    return Container(
-      width: double.infinity,
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            Color(0xFF415A77),
-            Color(0xFF1B263B),
-          ],
-        ),
-        borderRadius: BorderRadius.all(
-          Radius.circular(12),
-        ),
-      ),
-      child: ElevatedButton(
-        onPressed: _isLoading ? null : _saveToFirebase,
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.transparent,
-          shadowColor: Colors.transparent,
-          padding: const EdgeInsets.symmetric(vertical: 16),
-        ),
-        child:
-            _isLoading
-                ? const CircularProgressIndicator(color: Color(0xFFFFFFFF))
-                : const Text(
-                  'Continue to Upload',
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Color(0xFFFFFFFF),
-                    shadows: [
-                      Shadow(
-                        color: Colors.black26,
-                        offset: Offset(1, 1),
-                        blurRadius: 2,
-                      ),
-                    ],
-                  ),
-                ),
-      ),
+    return AppPrimaryButton(
+      label: 'Continue to Upload',
+      isLoading: _isLoading,
+      onPressed: _saveToFirebase,
     );
   }
 }
@@ -557,8 +326,7 @@ class _AadharNumberInputFormatter extends TextInputFormatter {
   @override
   TextEditingValue formatEditUpdate(
     TextEditingValue oldValue,
-    TextEditingValue newValue,
-  ) {
+    TextEditingValue newValue) {
     String newText = newValue.text.replaceAll(' ', '');
     if (newText.length > 12) {
       newText = newText.substring(0, 12);
@@ -572,7 +340,6 @@ class _AadharNumberInputFormatter extends TextInputFormatter {
     }
     return newValue.copyWith(
       text: formattedText,
-      selection: TextSelection.collapsed(offset: formattedText.length),
-    );
+      selection: TextSelection.collapsed(offset: formattedText.length));
   }
 }

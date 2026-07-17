@@ -1,260 +1,223 @@
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 
-/// Admin report screen with live stats and per-document submission breakdown.
-class ReportGenerationScreen extends StatelessWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
+import '/ui/ui.dart';
+import '/utils/app_constants.dart';
+import '/utils/theme.dart';
+import '/widgets/theme_toggle_button.dart';
 
-  const ReportGenerationScreen({
-    super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
-  });
+/// Lightweight admin reports — uses parent document status when present
+/// (1 read per student doc type max) to avoid N×upload fan-out where possible.
+class ReportGenerationScreen extends StatefulWidget {
+  const ReportGenerationScreen({super.key});
 
-  static const _documentTypes = [
-    'Aadhar Card',
-    'Voter ID',
-    '10th Marksheet',
-    '12th Marksheet',
-  ];
+  @override
+  State<ReportGenerationScreen> createState() => _ReportGenerationScreenState();
+}
 
+class _ReportGenerationScreenState extends State<ReportGenerationScreen> {
+  late Future<Map<String, Map<String, int>>> _statsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _statsFuture = _fetchStats();
+  }
+
+  /// Prefer parent `documents/{type}.status` (cheap). Fall back to latest upload
+  /// only when parent status is missing.
   Future<Map<String, Map<String, int>>> _fetchStats() async {
     final students =
-        await FirebaseFirestore.instance.collection('students').get();
+        await FirebaseFirestore.instance.collection('students').limit(300).get();
 
-    // counts[docType][status] = count
-    final Map<String, Map<String, int>> counts = {
-      for (final dt in _documentTypes)
-        dt: {'Pending': 0, 'Verified': 0, 'Rejected': 0, 'Not Submitted': 0}
+    final counts = {
+      for (final dt in AppConstants.documentTypes)
+        dt: {
+          'Pending': 0,
+          'Verified': 0,
+          'Rejected': 0,
+          'Not Submitted': 0,
+        }
     };
 
     final futures = <Future<void>>[];
-
-    for (final studentDoc in students.docs) {
-      for (final docType in _documentTypes) {
-        final docKey = docType.toLowerCase().replaceAll(' ', '_');
-        futures.add(Future(() async {
-          final uploads = await FirebaseFirestore.instance
+    for (final student in students.docs) {
+      for (var i = 0; i < AppConstants.documentTypes.length; i++) {
+        final title = AppConstants.documentTypes[i];
+        final key = AppConstants.documentTypeKeys[i];
+        futures.add(() async {
+          final parent = await FirebaseFirestore.instance
               .collection('students')
-              .doc(studentDoc.id)
+              .doc(student.id)
               .collection('documents')
-              .doc(docKey)
-              .collection('uploads')
-              .orderBy('submittedAt', descending: true)
-              .limit(1)
+              .doc(key)
               .get();
-          if (uploads.docs.isNotEmpty) {
-            final status = uploads.docs.first['status'] ?? 'Pending';
-            counts[docType]![status] =
-                (counts[docType]![status] ?? 0) + 1;
-          } else {
-            counts[docType]!['Not Submitted'] =
-                (counts[docType]!['Not Submitted'] ?? 0) + 1;
+          var status = parent.data()?['status'] as String?;
+          if (status == null || status.isEmpty) {
+            status = 'Not Submitted';
           }
-        }));
+          // Normalize unknown statuses
+          if (!counts[title]!.containsKey(status)) {
+            status = 'Pending';
+          }
+          counts[title]![status] = (counts[title]![status] ?? 0) + 1;
+        }());
       }
     }
     await Future.wait(futures);
     return counts;
   }
 
+  Future<void> _reload() async {
+    final next = _fetchStats();
+    setState(() => _statsFuture = next);
+    try {
+      await next;
+    } catch (_) {}
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Reports',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+    return AppScaffold(
+      title: 'Reports',
+      actions: [
+        IconButton(
+          tooltip: 'Refresh',
+          icon: const Icon(Icons.refresh, color: AppTheme.bgLight),
+          onPressed: _reload,
         ),
-        centerTitle: true,
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-            ),
-          ),
-        ),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(
-              isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
-              color: Colors.white,
-            ),
-            onPressed: toggleDarkMode,
-          ),
-        ],
-      ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: isDarkMode
-                ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
-        ),
-        child: FutureBuilder<Map<String, Map<String, int>>>(
-          future: _fetchStats(),
-          builder: (ctx, snap) {
-            if (snap.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (snap.hasError) {
-              return Center(child: Text('Error: ${snap.error}'));
-            }
-            final stats = snap.data!;
-            return ListView(
-              padding: const EdgeInsets.all(20),
+        const ThemeToggleButton(color: AppTheme.bgLight),
+      ],
+      body: FutureBuilder<Map<String, Map<String, int>>>(
+        future: _statsFuture,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const AppLoading(message: 'Building report…');
+          }
+          if (snap.hasError) {
+            return AppEmptyState.error(
+              title: 'Could not load reports',
+              message: '${snap.error}',
+              onAction: _reload,
+            );
+          }
+          final stats = snap.data!;
+          return RefreshIndicator(
+            color: AppTheme.primaryMid,
+            onRefresh: _reload,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
               children: [
                 Text(
-                  'Submission Overview',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: isDarkMode
-                        ? Colors.white
-                        : const Color(0xFF1B263B),
-                  ),
+                  'Submission overview',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Live counts per document type',
-                  style: TextStyle(
-                    color: isDarkMode
-                        ? const Color(0xFFB0C4DE)
-                        : const Color(0xFF6B7280),
-                  ),
+                  'Per-document counts from student records (capped). Pull to refresh.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? AppTheme.accentBlue
+                            : AppTheme.textMuted,
+                      ),
                 ),
-                const SizedBox(height: 20),
-                ...stats.entries.map((entry) {
-                  final docType = entry.key;
-                  final c = entry.value;
-                  final total = (c['Pending'] ?? 0) +
-                      (c['Verified'] ?? 0) +
-                      (c['Rejected'] ?? 0) +
-                      (c['Not Submitted'] ?? 0);
+                const SizedBox(height: 16),
+                ...stats.entries.map((e) {
+                  final c = e.value;
+                  final total = c.values.fold<int>(0, (a, b) => a + b);
                   final verified = c['Verified'] ?? 0;
-
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 16),
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: isDarkMode
-                          ? const Color(0xFF2A3A5A)
-                          : Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.08),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
+                  return AppCard(
+                    margin: const EdgeInsets.only(bottom: 12),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(
                           children: [
-                            Icon(_docIcon(docType),
-                                color: const Color(0xFF415A77)),
+                            Icon(_icon(e.key), color: AppTheme.primaryMid),
                             const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                e.key,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ),
                             Text(
-                              docType,
+                              '$verified / $total',
                               style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                                color: isDarkMode
-                                    ? Colors.white
-                                    : const Color(0xFF1B263B),
+                                color: Theme.of(context).brightness ==
+                                        Brightness.dark
+                                    ? AppTheme.accentBlue
+                                    : AppTheme.textMuted,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ],
                         ),
                         const SizedBox(height: 12),
-                        // Progress bar
                         ClipRRect(
                           borderRadius: BorderRadius.circular(6),
                           child: LinearProgressIndicator(
                             value: total == 0 ? 0 : verified / total,
                             minHeight: 8,
-                            backgroundColor: isDarkMode
-                                ? const Color(0xFF415A77).withOpacity(0.2)
-                                : const Color(0xFFE5E7EB),
-                            valueColor: const AlwaysStoppedAnimation<Color>(
-                              Color(0xFF10B981),
-                            ),
+                            backgroundColor:
+                                AppTheme.primaryMid.withValues(alpha: 0.15),
+                            color: AppTheme.successGreen,
                           ),
                         ),
-                        const SizedBox(height: 10),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
                           children: [
-                            _statChip('Verified', c['Verified'] ?? 0,
-                                const Color(0xFF10B981)),
-                            _statChip('Pending', c['Pending'] ?? 0,
-                                const Color(0xFFF59E0B)),
-                            _statChip('Rejected', c['Rejected'] ?? 0,
-                                const Color(0xFFEF4444)),
-                            _statChip('Not Submitted',
-                                c['Not Submitted'] ?? 0,
-                                const Color(0xFF6B7280)),
+                            StatusBadge(
+                              status: 'Verified · ${c['Verified'] ?? 0}',
+                              showIcon: true,
+                              fontSize: 11,
+                            ),
+                            StatusBadge(
+                              status: 'Pending · ${c['Pending'] ?? 0}',
+                              showIcon: true,
+                              fontSize: 11,
+                            ),
+                            StatusBadge(
+                              status: 'Rejected · ${c['Rejected'] ?? 0}',
+                              showIcon: true,
+                              fontSize: 11,
+                            ),
+                            StatusBadge(
+                              status:
+                                  'Not Submitted · ${c['Not Submitted'] ?? 0}',
+                              showIcon: false,
+                              fontSize: 11,
+                            ),
                           ],
                         ),
                       ],
                     ),
                   );
-                }).toList(),
+                }),
               ],
-            );
-          },
-        ),
+            ),
+          );
+        },
       ),
     );
   }
 
-  Widget _statChip(String label, int count, Color color) {
-    return Column(
-      children: [
-        Text(
-          count.toString(),
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: color,
-          ),
-        ),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 11,
-            color: isDarkMode
-                ? const Color(0xFFB0C4DE)
-                : const Color(0xFF6B7280),
-          ),
-          textAlign: TextAlign.center,
-        ),
-      ],
-    );
-  }
-
-  IconData _docIcon(String docType) {
+  IconData _icon(String docType) {
     switch (docType.toLowerCase()) {
       case 'aadhar card':
         return Icons.credit_card;
       case 'voter id':
         return Icons.how_to_vote;
       default:
-        return Icons.school;
+        return Icons.school_outlined;
     }
   }
 }

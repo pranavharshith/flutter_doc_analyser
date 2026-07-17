@@ -1,315 +1,254 @@
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+
+import '/ui/ui.dart';
+import '/utils/app_snackbar.dart';
+import '/utils/theme.dart';
+import '/widgets/theme_toggle_button.dart';
 
 class AdminTrashScreen extends StatefulWidget {
   const AdminTrashScreen({super.key});
 
   @override
-  _AdminTrashScreenState createState() => _AdminTrashScreenState();
+  State<AdminTrashScreen> createState() => _AdminTrashScreenState();
 }
 
 class _AdminTrashScreenState extends State<AdminTrashScreen> {
-  // Stream to fetch trashed notifications for admin
-  Stream<QuerySnapshot> _getTrashedNotifications() {
+  late Stream<QuerySnapshot> _trashStream;
+  int _streamGeneration = 0;
+  bool _isRefreshing = false;
+  bool _purgedExpired = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _trashStream = _createStream();
+  }
+
+  Stream<QuerySnapshot> _createStream() {
     return FirebaseFirestore.instance
         .collection('notifications')
         .doc('admin')
         .collection('trash')
         .orderBy('deletedAt', descending: true)
+        .limit(100)
         .snapshots();
   }
 
-  // Restore a notification
-  Future<void> _restoreNotification(
-    String notificationId,
-    Map<String, dynamic> notificationData,
-  ) async {
+  Future<void> _refresh() async {
+    if (_isRefreshing) return;
+    setState(() {
+      _isRefreshing = true;
+      _streamGeneration++;
+      _purgedExpired = false;
+      _trashStream = _createStream();
+    });
     try {
-      // Add back to adminNotifications
+      await _trashStream.first.timeout(const Duration(seconds: 15));
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() => _isRefreshing = false);
+    }
+  }
+
+  Future<void> _restore(String id, Map<String, dynamic> data) async {
+    try {
       await FirebaseFirestore.instance
           .collection('notifications')
           .doc('admin')
           .collection('adminNotifications')
-          .doc(notificationId)
-          .set({...notificationData, 'isRead': false, 'deletedAt': null});
-
-      // Remove from trash
+          .doc(id)
+          .set({...data, 'isRead': false, 'deletedAt': null});
       await FirebaseFirestore.instance
           .collection('notifications')
           .doc('admin')
           .collection('trash')
-          .doc(notificationId)
+          .doc(id)
           .delete();
-
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Notification restored')));
+      if (mounted) AppSnackBar.success(context, 'Notification restored');
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error restoring notification: $e')),
-      );
+      if (mounted) AppSnackBar.error(context, 'Could not restore');
     }
   }
 
-  // Permanently delete a notification
-  Future<void> _permanentlyDeleteNotification(String notificationId) async {
+  Future<void> _deleteForever(String id) async {
     try {
       await FirebaseFirestore.instance
           .collection('notifications')
           .doc('admin')
           .collection('trash')
-          .doc(notificationId)
+          .doc(id)
           .delete();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Notification permanently deleted')),
-      );
+      if (mounted) AppSnackBar.success(context, 'Permanently deleted');
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error deleting notification: $e')),
-      );
+      if (mounted) AppSnackBar.error(context, 'Could not delete');
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          "Admin Trash",
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Color(0xFFFFFFFF),
-          ),
-        ),
-        centerTitle: true,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Color(0xFFFFFFFF)),
-          onPressed: () => Navigator.pop(context),
-        ),
-      ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: isDarkMode
-                ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
-        ),
-        child: SafeArea(
-          child: StreamBuilder<QuerySnapshot>(
-            stream: _getTrashedNotifications(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snapshot.hasError) {
-                return const Center(child: Text('Error fetching trash'));
-              }
-              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                return Center(
-                  child: Container(
-                    margin: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: isDarkMode
-                          ? const Color(0xFF2A3A5A)
-                          : const Color(0xFFFFFFFF).withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(10),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(isDarkMode ? 0.3 : 0.1),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    padding: const EdgeInsets.all(20),
-                    child: Text(
-                      "Trash is empty.",
-                      style: TextStyle(
-                        color: isDarkMode
-                            ? const Color(0xFFFFFFFF)
-                            : const Color(0xFF1B263B),
-                        fontSize: 18,
-                      ),
-                    ),
+    return AppScaffold(
+      title: 'Trash',
+      actions: [
+        IconButton(
+          tooltip: 'Refresh',
+          onPressed: _isRefreshing ? null : _refresh,
+          icon: _isRefreshing
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppTheme.bgLight,
                   ),
-                );
+                )
+              : const Icon(Icons.refresh, color: AppTheme.bgLight),
+        ),
+        const ThemeToggleButton(color: AppTheme.bgLight),
+      ],
+      body: StreamBuilder<QuerySnapshot>(
+        key: ValueKey('trash_$_streamGeneration'),
+        stream: _trashStream,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting &&
+              !snapshot.hasData) {
+            return const AppLoading(message: 'Loading trash…');
+          }
+          if (snapshot.hasError) {
+            return AppEmptyState.error(
+              title: 'Could not load trash',
+              message: '${snapshot.error}',
+              onAction: _refresh,
+            );
+          }
+
+          final docs = snapshot.data?.docs ?? [];
+          if (!_purgedExpired && docs.isNotEmpty) {
+            _purgedExpired = true;
+            for (final doc in docs) {
+              final data = doc.data() as Map<String, dynamic>;
+              final deletedAt = data['deletedAt'] as Timestamp?;
+              if (deletedAt != null &&
+                  DateTime.now().difference(deletedAt.toDate()).inDays >= 15) {
+                _deleteForever(doc.id);
               }
+            }
+          }
 
-              final notifications = snapshot.data!.docs;
+          final remaining = docs.where((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            final deletedAt = data['deletedAt'] as Timestamp?;
+            if (deletedAt == null) return true;
+            return DateTime.now().difference(deletedAt.toDate()).inDays < 15;
+          }).toList();
 
-              // Filter out notifications older than 15 days and delete them
-              for (var doc in notifications) {
-                final data = doc.data() as Map<String, dynamic>;
+          if (remaining.isEmpty) {
+            return RefreshIndicator(
+              onRefresh: _refresh,
+              color: AppTheme.primaryMid,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: const [
+                  SizedBox(height: 64),
+                  AppEmptyState(
+                    icon: Icons.delete_outline,
+                    title: 'Trash is empty',
+                    message: 'Deleted notifications stay here for 15 days.',
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return RefreshIndicator(
+            onRefresh: _refresh,
+            color: AppTheme.primaryMid,
+            child: ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
+              itemCount: remaining.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (context, i) {
+                final data = remaining[i].data() as Map<String, dynamic>;
+                final id = remaining[i].id;
                 final deletedAt = data['deletedAt'] as Timestamp?;
-                if (deletedAt != null) {
-                  final deletedDate = deletedAt.toDate();
-                  final daysSinceDeletion =
-                      DateTime.now().difference(deletedDate).inDays;
-                  if (daysSinceDeletion >= 15) {
-                    _permanentlyDeleteNotification(doc.id);
-                  }
-                }
-              }
+                final daysLeft = deletedAt != null
+                    ? 15 -
+                        DateTime.now().difference(deletedAt.toDate()).inDays
+                    : 15;
 
-              // Display remaining notifications
-              final remainingNotifications =
-                  notifications.where((doc) {
-                    final data = doc.data() as Map<String, dynamic>;
-                    final deletedAt = data['deletedAt'] as Timestamp?;
-                    if (deletedAt == null) return true;
-                    final deletedDate = deletedAt.toDate();
-                    return DateTime.now().difference(deletedDate).inDays < 15;
-                  }).toList();
-
-              if (remainingNotifications.isEmpty) {
-                return Center(
-                  child: Container(
-                    margin: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: isDarkMode
-                          ? const Color(0xFF2A3A5A)
-                          : const Color(0xFFFFFFFF).withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(10),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(isDarkMode ? 0.3 : 0.1),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
+                return AppCard(
+                  elevation: 0,
+                  padding: EdgeInsets.zero,
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor:
+                          AppTheme.errorRed.withValues(alpha: 0.12),
+                      child: const Icon(Icons.delete_outline,
+                          color: AppTheme.errorRed),
+                    ),
+                    title: Text(
+                      data['message'] as String? ?? 'No message',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      '${data['documentType'] ?? ''} · $daysLeft day(s) left',
+                    ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          tooltip: 'Restore',
+                          icon: const Icon(Icons.restore,
+                              color: AppTheme.successGreen),
+                          onPressed: () => _restore(id, data),
+                        ),
+                        IconButton(
+                          tooltip: 'Delete forever',
+                          icon: const Icon(Icons.delete_forever,
+                              color: AppTheme.errorRed),
+                          onPressed: () async {
+                            final ok = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                title: const Text('Delete permanently?'),
+                                content: const Text(
+                                  'This cannot be undone.',
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () =>
+                                        Navigator.pop(ctx, false),
+                                    child: const Text('Cancel'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () =>
+                                        Navigator.pop(ctx, true),
+                                    child: const Text(
+                                      'Delete',
+                                      style:
+                                          TextStyle(color: AppTheme.errorRed),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (ok == true && mounted) {
+                              await _deleteForever(id);
+                            }
+                          },
                         ),
                       ],
                     ),
-                    padding: const EdgeInsets.all(20),
-                    child: Text(
-                      "Trash is empty.",
-                      style: TextStyle(
-                        color: isDarkMode
-                            ? const Color(0xFFFFFFFF)
-                            : const Color(0xFF1B263B),
-                        fontSize: 18,
-                      ),
-                    ),
                   ),
                 );
-              }
-
-              return ListView.builder(
-                padding: const EdgeInsets.all(16),
-                itemCount: remainingNotifications.length,
-                itemBuilder: (context, index) {
-                  final notification =
-                      remainingNotifications[index].data()
-                          as Map<String, dynamic>;
-                  final notificationId = remainingNotifications[index].id;
-                  final deletedAt = notification['deletedAt'] as Timestamp?;
-                  final daysLeft =
-                      deletedAt != null
-                          ? 15 -
-                              DateTime.now()
-                                  .difference(deletedAt.toDate())
-                                  .inDays
-                          : 15;
-
-                  return Card(
-                    color: isDarkMode
-                        ? const Color(0xFF2A3A5A)
-                        : const Color(0xFFFFFFFF),
-                    elevation: 2,
-                    margin: const EdgeInsets.only(bottom: 12),
-                    child: ListTile(
-                      leading: const Icon(Icons.delete, color: Colors.grey),
-                      title: Text(
-                        notification['message'] ?? 'No message',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          color: isDarkMode ? Colors.white : Colors.black,
-                        ),
-                      ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            notification['documentType'] ?? '',
-                            style: TextStyle(
-                              color: isDarkMode ? Colors.white70 : Colors.grey,
-                            ),
-                          ),
-                          Text(
-                            'Will be deleted in $daysLeft day${daysLeft != 1 ? 's' : ''}',
-                            style: const TextStyle(
-                              color: Colors.red,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(
-                              Icons.restore,
-                              color: Colors.green,
-                            ),
-                            onPressed:
-                                () => _restoreNotification(
-                                  notificationId,
-                                  notification,
-                                ),
-                          ),
-                          IconButton(
-                            icon: const Icon(
-                              Icons.delete_forever,
-                              color: Colors.red,
-                            ),
-                            onPressed: () async {
-                              final confirm = await showDialog<bool>(
-                                context: context,
-                                builder: (ctx) => AlertDialog(
-                                  title: const Text('Delete Permanently?'),
-                                  content: const Text('This action cannot be undone. Are you sure?'),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(ctx, false),
-                                      child: const Text('Cancel'),
-                                    ),
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(ctx, true),
-                                      child: const Text('Delete', style: TextStyle(color: Colors.red)),
-                                    ),
-                                  ],
-                                ),
-                              );
-                              
-                              if (confirm == true && mounted) {
-                                _permanentlyDeleteNotification(notificationId);
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              );
-            },
-          ),
-        ),
+              },
+            ),
+          );
+        },
       ),
     );
   }

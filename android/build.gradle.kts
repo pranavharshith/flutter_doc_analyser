@@ -5,11 +5,14 @@ allprojects {
     }
 }
 
-val newBuildDir: Directory = rootProject.layout.buildDirectory.dir("../../build").get()
+// Default Flutter layout: outputs under project build/ so `flutter run` can
+// find app-debug.apk. (The old LOCALAPPDATA redirect was for OneDrive locks;
+// this tree is on D:\vortex and does not need that.)
+val newBuildDir = rootProject.layout.buildDirectory.dir("../../build").get()
 rootProject.layout.buildDirectory.value(newBuildDir)
 
 subprojects {
-    val newSubprojectBuildDir: Directory = newBuildDir.dir(project.name)
+    val newSubprojectBuildDir = newBuildDir.dir(project.name)
     project.layout.buildDirectory.value(newSubprojectBuildDir)
 }
 subprojects {
@@ -22,6 +25,8 @@ tasks.register<Delete>("clean") {
 
 allprojects {
     tasks.withType<JavaCompile>().configureEach {
-        options.compilerArgs.addAll(listOf("-Xlint:-options", "-Xlint:-unchecked", "-Xlint:-deprecation"))
+        options.compilerArgs.addAll(
+            listOf("-Xlint:-options", "-Xlint:-unchecked", "-Xlint:-deprecation"),
+        )
     }
 }

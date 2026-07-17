@@ -32,6 +32,12 @@ migrate_working_dir/
 .pub-cache/
 .pub/
 /build/
+.gradle/
+**/.gradle/
+
+# Local / accidental artifacts
+flutter_01.png
+.agents/
 
 # Symbolication related
 app.*.symbols

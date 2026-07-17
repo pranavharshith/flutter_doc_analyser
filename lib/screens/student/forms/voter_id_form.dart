@@ -1,18 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '/screens/student/upload_document_screen.dart';
-import '/screens/student/document_upload_screen.dart';
+import '/ui/dialogs.dart';
+import '/ui/ui.dart';
+import '/utils/document_validators.dart';
 
 class VoterIdForm extends StatefulWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
-  final void Function(int) onTabChange; // Callback to change the tab
+  final void Function(int) onTabChange;
 
   const VoterIdForm({
     super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
-    required this.onTabChange, // Add the callback as a required parameter
+    required this.onTabChange,
   });
 
   @override
@@ -21,187 +19,92 @@ class VoterIdForm extends StatefulWidget {
 
 class _VoterIdFormState extends State<VoterIdForm> {
   final _formKey = GlobalKey<FormState>();
-  final _spacing = const SizedBox(height: 16);
-  final TextEditingController _voterIdController = TextEditingController();
-  final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _fatherNameController = TextEditingController();
-  final TextEditingController _dobController = TextEditingController();
+  final _voterIdController = TextEditingController();
+  final _nameController = TextEditingController();
+  final _fatherNameController = TextEditingController();
+  final _dobController = TextEditingController();
 
   String? _selectedGender;
-  bool _showForm = false; // To control form visibility after popup
+  bool _showForm = false;
+  bool _deciding = true;
 
-  String? _validateVoterId(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return "Enter Voter ID Number";
-    } else if (!RegExp(r'^[a-zA-Z0-9]{10}$').hasMatch(value)) {
-      return "Voter ID should be exactly 10 alphanumeric characters";
-    }
-    return null;
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _askHasVoterId());
   }
 
-  String? _validateName(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return "Enter Name";
-    } else if (!RegExp(r'^[a-zA-Z\s]+$').hasMatch(value)) {
-      return "Only alphabets allowed";
-    }
-    return null;
-  }
+  Future<void> _askHasVoterId() async {
+    final result = await AppDialogs.confirmVoterId(context);
+    if (!mounted) return;
 
-  String? _validateFatherName(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return "Enter Father's/Husband's Name";
-    } else if (!RegExp(r'^[a-zA-Z\s]+$').hasMatch(value)) {
-      return "Only alphabets allowed";
+    if (result == true) {
+      setState(() {
+        _showForm = true;
+        _deciding = false;
+      });
+      return;
     }
-    return null;
-  }
 
-  String? _validateDob(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return "Select Date of Birth";
-    }
-    return null;
+    // No / dismissed → back to Documents tab
+    widget.onTabChange(1);
+    Navigator.of(context).pop();
   }
 
   Future<void> _selectDob() async {
     final now = DateTime.now();
     final picked = await showDatePicker(
       context: context,
-      initialDate: now,
+      initialDate: DateTime(2000),
       firstDate: DateTime(1900),
       lastDate: now,
       helpText: 'Select Date of Birth',
-      fieldLabelText: 'Date of Birth',
-      initialEntryMode: DatePickerEntryMode.calendarOnly,
     );
     if (picked != null) {
-      final formatted = DateFormat('dd/MM/yyyy').format(picked);
-      _dobController.text = formatted;
+      _dobController.text = DateFormat('dd/MM/yyyy').format(picked);
     }
   }
 
-  @override
-  void initState() {
-    super.initState();
-    // Show the popup when the widget is initialized
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _showVoterIdPopup();
-    });
+  String? _validateVoterId(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Enter Voter ID Number';
+    }
+    final id = value.trim().toUpperCase();
+    if (!DocumentValidators.isValidVoterIdFormat(id)) {
+      return 'Enter a valid EPIC / Voter ID (e.g. ABC1234567)';
+    }
+    return null;
   }
 
-  Future<void> _showVoterIdPopup() async {
-    final result = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false, // Prevent dismissing by tapping outside
-      builder: (BuildContext context) {
-        return Dialog(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          backgroundColor: widget.isDarkMode ? const Color(0xFF2A3A5A) : const Color(0xFFFFFFFF),
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Icon for visual appeal
-                const Icon(
-                  Icons.how_to_vote,
-                  size: 48,
-                  color: Color(0xFF415A77),
-                ),
-                const SizedBox(height: 16),
-                // Title
-                Text(
-                  'Do you have a Voter ID?',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: widget.isDarkMode ? const Color(0xFFFFFFFF) : const Color(0xFF1B263B),
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24),
-                // Buttons
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    // Yes Button
-                    Container(
-                      width: 100,
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [Color(0xFF10B981), Color(0xFF059669)],
-                        ),
-                        borderRadius: BorderRadius.all(Radius.circular(8)),
-                      ),
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.of(context).pop(true), // Yes
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.transparent,
-                          shadowColor: Colors.transparent,
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.all(Radius.circular(8)),
-                          ),
-                        ),
-                        child: const Text(
-                          'Yes',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Color(0xFFFFFFFF),
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                    // No Button
-                    Container(
-                      width: 100,
-                      decoration: const BoxDecoration(
-                        gradient: LinearGradient(
-                          colors: [Color(0xFFEF4444), Color(0xFFB91C1C)],
-                        ),
-                        borderRadius: BorderRadius.all(Radius.circular(8)),
-                      ),
-                      child: ElevatedButton(
-                        onPressed: () {
-                          Navigator.of(context).pop(false); // Close the dialog
-                          widget.onTabChange(1); // Switch to Documents tab (assumed index 1)
-                          Navigator.of(context).pop(); // Pop the VoterIdForm screen
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.transparent,
-                          shadowColor: Colors.transparent,
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.all(Radius.circular(8)),
-                          ),
-                        ),
-                        child: const Text(
-                          'No',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Color(0xFFFFFFFF),
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
+  String? _validateName(String? value, String emptyMsg) {
+    if (value == null || value.trim().isEmpty) return emptyMsg;
+    if (!RegExp(r'^[a-zA-Z\s]+$').hasMatch(value.trim())) {
+      return 'Only alphabets allowed';
+    }
+    return null;
+  }
+
+  void _continue() {
+    if (!_formKey.currentState!.validate()) return;
+
+    final expectedValues = {
+      'voterId': _voterIdController.text.trim().toUpperCase(),
+      'name': _nameController.text.trim(),
+      'fatherName': _fatherNameController.text.trim(),
+      'dob': _dobController.text.trim(),
+      'gender': _selectedGender ?? '',
+    };
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => UploadDocumentScreen(
+          title: 'Voter ID',
+          expectedValues: expectedValues,
+          essentialFields: const ['voterId', 'name'],
+        ),
+      ),
     );
-
-    if (result == true) {
-      // If "Yes" is clicked, show the form
-      setState(() {
-        _showForm = true;
-      });
-    }
   }
 
   @override
@@ -215,551 +118,131 @@ class _VoterIdFormState extends State<VoterIdForm> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_showForm) {
-      // Return an empty scaffold until the popup decision is made
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
+    if (_deciding || !_showForm) {
+      return const AppScaffold(
+        title: 'Voter ID',
+        body: AppLoading(message: 'Checking…'),
       );
     }
 
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors:
-                widget.isDarkMode
-                    ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                    : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildAppBar(),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24.0),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color:
-                            widget.isDarkMode
-                                ? const Color(0xFF2A3A5A)
-                                : const Color(0xFFFFFFFF),
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(
-                              widget.isDarkMode ? 0.3 : 0.1,
-                            ),
-                            blurRadius: 10,
-                            offset: const Offset(0, 5),
-                          ),
-                        ],
-                      ),
-                      padding: const EdgeInsets.all(16.0),
-                      child: Form(
-                        key: _formKey,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              "Voter ID Number",
-                              style: Theme.of(
-                                context,
-                              ).textTheme.labelLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            TextFormField(
-                              controller: _voterIdController,
-                              keyboardType: TextInputType.text, // Changed to allow alphanumeric input
-                              style: TextStyle(
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                              decoration: InputDecoration(
-                                hintText: "Enter 10 digit Voter ID (e.g., ABC1234567)",
-                                hintStyle: TextStyle(
-                                  color:
-                                      widget.isDarkMode
-                                          ? const Color(0xFFB0C4DE)
-                                          : const Color(0xFF6B7280),
-                                ),
-                                filled: true,
-                                fillColor:
-                                    widget.isDarkMode
-                                        ? const Color(0xFF3B4A6B)
-                                        : const Color(0xFFE6E9EF),
-                                border: const OutlineInputBorder(
-                                  borderRadius: BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: const BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                  borderSide:
-                                      widget.isDarkMode
-                                          ? const BorderSide(
-                                            color: Color(0xFFB0C4DE),
-                                            width: 1.0,
-                                          )
-                                          : BorderSide.none,
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: const BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                  borderSide:
-                                      widget.isDarkMode
-                                          ? const BorderSide(
-                                            color: Color(0xFFB0C4DE),
-                                            width: 1.0,
-                                          )
-                                          : BorderSide.none,
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 16,
-                                ),
-                              ),
-                              validator: _validateVoterId,
-                            ),
-                            _spacing,
-                            Text(
-                              "Name",
-                              style: Theme.of(
-                                context,
-                              ).textTheme.labelLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            TextFormField(
-                              controller: _nameController,
-                              style: TextStyle(
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                              decoration: InputDecoration(
-                                hintText: "Enter full name",
-                                hintStyle: TextStyle(
-                                  color:
-                                      widget.isDarkMode
-                                          ? const Color(0xFFB0C4DE)
-                                          : const Color(0xFF6B7280),
-                                ),
-                                filled: true,
-                                fillColor:
-                                    widget.isDarkMode
-                                        ? const Color(0xFF3B4A6B)
-                                        : const Color(0xFFE6E9EF),
-                                border: const OutlineInputBorder(
-                                  borderRadius: BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: const BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                  borderSide:
-                                      widget.isDarkMode
-                                          ? const BorderSide(
-                                            color: Color(0xFFB0C4DE),
-                                            width: 1.0,
-                                          )
-                                          : BorderSide.none,
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: const BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                  borderSide:
-                                      widget.isDarkMode
-                                          ? const BorderSide(
-                                            color: Color(0xFFB0C4DE),
-                                            width: 1.0,
-                                          )
-                                          : BorderSide.none,
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 16,
-                                ),
-                              ),
-                              validator: _validateName,
-                            ),
-                            _spacing,
-                            Text(
-                              "Father's/Husband's Name",
-                              style: Theme.of(
-                                context,
-                              ).textTheme.labelLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            TextFormField(
-                              controller: _fatherNameController,
-                              style: TextStyle(
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                              decoration: InputDecoration(
-                                hintText: "Enter father's/husband's name",
-                                hintStyle: TextStyle(
-                                  color:
-                                      widget.isDarkMode
-                                          ? const Color(0xFFB0C4DE)
-                                          : const Color(0xFF6B7280),
-                                ),
-                                filled: true,
-                                fillColor:
-                                    widget.isDarkMode
-                                        ? const Color(0xFF3B4A6B)
-                                        : const Color(0xFFE6E9EF),
-                                border: const OutlineInputBorder(
-                                  borderRadius: BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: const BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                  borderSide:
-                                      widget.isDarkMode
-                                          ? const BorderSide(
-                                            color: Color(0xFFB0C4DE),
-                                            width: 1.0,
-                                          )
-                                          : BorderSide.none,
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: const BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                  borderSide:
-                                      widget.isDarkMode
-                                          ? const BorderSide(
-                                            color: Color(0xFFB0C4DE),
-                                            width: 1.0,
-                                          )
-                                          : BorderSide.none,
-                                ),
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 16,
-                                ),
-                              ),
-                              validator: _validateFatherName,
-                            ),
-                            _spacing,
-                            Text(
-                              "Date of Birth",
-                              style: Theme.of(
-                                context,
-                              ).textTheme.labelLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            GestureDetector(
-                              onTap: _selectDob,
-                              child: AbsorbPointer(
-                                child: TextFormField(
-                                  controller: _dobController,
-                                  style: TextStyle(
-                                    color:
-                                        widget.isDarkMode
-                                            ? const Color(0xFFFFFFFF)
-                                            : const Color(0xFF1B263B),
-                                  ),
-                                  decoration: InputDecoration(
-                                    hintText: "DD/MM/YYYY",
-                                    hintStyle: TextStyle(
-                                      color:
-                                          widget.isDarkMode
-                                              ? const Color(0xFFB0C4DE)
-                                              : const Color(0xFF6B7280),
-                                    ),
-                                    suffixIcon: Icon(
-                                      Icons.calendar_month,
-                                      color:
-                                          widget.isDarkMode
-                                              ? const Color(0xFFB0C4DE)
-                                              : const Color(0xFF1B263B),
-                                    ),
-                                    filled: true,
-                                    fillColor:
-                                        widget.isDarkMode
-                                            ? const Color(0xFF3B4A6B)
-                                            : const Color(0xFFE6E9EF),
-                                    border: const OutlineInputBorder(
-                                      borderRadius: BorderRadius.all(
-                                        Radius.circular(12),
-                                      ),
-                                    ),
-                                    enabledBorder: OutlineInputBorder(
-                                      borderRadius: const BorderRadius.all(
-                                        Radius.circular(12),
-                                      ),
-                                      borderSide:
-                                          widget.isDarkMode
-                                              ? const BorderSide(
-                                                color: Color(0xFFB0C4DE),
-                                                width: 1.0,
-                                              )
-                                              : BorderSide.none,
-                                    ),
-                                    focusedBorder: OutlineInputBorder(
-                                      borderRadius: const BorderRadius.all(
-                                        Radius.circular(12),
-                                      ),
-                                      borderSide:
-                                          widget.isDarkMode
-                                              ? const BorderSide(
-                                                color: Color(0xFFB0C4DE),
-                                                width: 1.0,
-                                              )
-                                              : BorderSide.none,
-                                    ),
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 20,
-                                      vertical: 16,
-                                    ),
-                                  ),
-                                  validator: _validateDob,
-                                ),
-                              ),
-                            ),
-                            _spacing,
-                            Text(
-                              "Gender",
-                              style: Theme.of(
-                                context,
-                              ).textTheme.labelLarge?.copyWith(
-                                fontWeight: FontWeight.bold,
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            DropdownButtonFormField<String>(
-                              decoration: InputDecoration(
-                                filled: true,
-                                fillColor:
-                                    widget.isDarkMode
-                                        ? const Color(0xFF3B4A6B)
-                                        : const Color(0xFFE6E9EF),
-                                border: const OutlineInputBorder(
-                                  borderRadius: BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                ),
-                                enabledBorder: OutlineInputBorder(
-                                  borderRadius: const BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                  borderSide:
-                                      widget.isDarkMode
-                                          ? const BorderSide(
-                                            color: Color(0xFFB0C4DE),
-                                            width: 1.0,
-                                          )
-                                          : BorderSide.none,
-                                ),
-                                focusedBorder: OutlineInputBorder(
-                                  borderRadius: const BorderRadius.all(
-                                    Radius.circular(12),
-                                  ),
-                                  borderSide:
-                                      widget.isDarkMode
-                                          ? const BorderSide(
-                                            color: Color(0xFFB0C4DE),
-                                            width: 1.0,
-                                          )
-                                          : BorderSide.none,
-                                ),
-                              ),
-                              dropdownColor:
-                                  widget.isDarkMode
-                                      ? const Color(0xFF2A3A5A)
-                                      : const Color(0xFFFFFFFF),
-                              value: _selectedGender,
-                              items:
-                                  ["Male", "Female", "Other"]
-                                      .map(
-                                        (gender) => DropdownMenuItem(
-                                          value: gender,
-                                          child: Text(
-                                            gender,
-                                            style: TextStyle(
-                                              color:
-                                                  widget.isDarkMode
-                                                      ? const Color(0xFFFFFFFF)
-                                                      : const Color(0xFF1B263B),
-                                            ),
-                                          ),
-                                        ),
-                                      )
-                                      .toList(),
-                              onChanged:
-                                  (value) =>
-                                      setState(() => _selectedGender = value),
-                              validator:
-                                  (value) =>
-                                      value == null ? "Select gender" : null,
-                              style: TextStyle(
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFFFFFFF)
-                                        : const Color(0xFF1B263B),
-                              ),
-                              icon: Icon(
-                                Icons.arrow_drop_down,
-                                color:
-                                    widget.isDarkMode
-                                        ? const Color(0xFFB0C4DE)
-                                        : const Color(0xFF1B263B),
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            Container(
-                              width: double.infinity,
-                              decoration: const BoxDecoration(
-                                gradient: LinearGradient(
-                                  colors: [
-                                    Color(0xFF415A77),
-                                    Color(0xFF1B263B),
-                                  ],
-                                ),
-                                borderRadius: BorderRadius.all(
-                                  Radius.circular(12),
-                                ),
-                              ),
-                              child: ElevatedButton(
-                                onPressed: () {
-                                  if (_formKey.currentState!.validate()) {
-                                    // Create expected values map from form data
-                                    Map<String, String> expectedValues = {
-                                      'voterId': _voterIdController.text.trim(),
-                                      'name': _nameController.text.trim(),
-                                      'fatherName':
-                                          _fatherNameController.text.trim(),
-                                      'dob': _dobController.text.trim(),
-                                      'gender': _selectedGender ?? '',
-                                    };
+    final fieldStyle = FormStyles.fieldText(context);
+    final iconColor = FormStyles.muted(context);
 
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => UploadDocumentScreen(
-                                          title: "Voter ID",
-                                          toggleDarkMode: widget.toggleDarkMode,
-                                          isDarkMode: widget.isDarkMode,
-                                          expectedValues: expectedValues,
-                                          essentialFields: const [],
-                                        ),
-                                      ),
-                                    );
-                                  }
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.transparent,
-                                  shadowColor: Colors.transparent,
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 16,
-                                  ),
-                                ),
-                                child: const Text(
-                                  "Continue to Upload",
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: Color(0xFFFFFFFF),
-                                    shadows: [
-                                      Shadow(
-                                        color: Colors.black26,
-                                        offset: Offset(1, 1),
-                                        blurRadius: 2,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
+    return AppScaffold(
+      title: 'Voter ID',
+      body: Column(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
+              child: AppCard(
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                const WizardStepper(currentStep: 0),
+                const SizedBox(height: 8),
+                Text('Voter ID Number', style: FormStyles.labelText(context)),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _voterIdController,
+                  style: fieldStyle,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: FormStyles.decoration(
+                    context,
+                    hintText: 'Enter 10-character Voter ID (e.g. ABC1234567)',
+                  ),
+                  validator: _validateVoterId,
+                ),
+                const SizedBox(height: 16),
+                Text('Name', style: FormStyles.labelText(context)),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _nameController,
+                  style: fieldStyle,
+                  decoration: FormStyles.decoration(
+                    context,
+                    hintText: 'Enter full name',
+                  ),
+                  validator: (v) => _validateName(v, 'Enter Name'),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  "Father's / Husband's Name",
+                  style: FormStyles.labelText(context),
+                ),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: _fatherNameController,
+                  style: fieldStyle,
+                  decoration: FormStyles.decoration(
+                    context,
+                    hintText: "Enter father's/husband's name",
+                  ),
+                  validator: (v) =>
+                      _validateName(v, "Enter Father's/Husband's Name"),
+                ),
+                const SizedBox(height: 16),
+                Text('Date of Birth', style: FormStyles.labelText(context)),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: _selectDob,
+                  child: AbsorbPointer(
+                    child: TextFormField(
+                      controller: _dobController,
+                      style: fieldStyle,
+                      decoration: FormStyles.decoration(
+                        context,
+                        hintText: 'DD/MM/YYYY',
+                        suffixIcon: Icon(
+                          Icons.calendar_month,
+                          color: iconColor,
                         ),
                       ),
+                      validator: (v) =>
+                          (v == null || v.trim().isEmpty)
+                              ? 'Select Date of Birth'
+                              : null,
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAppBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back, color: Color(0xFFFFFFFF)),
-                onPressed: () => Navigator.pop(context),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                'VOTERID DETAILS',
-                style: TextStyle(
-                  color: Color(0xFFFFFFFF),
-                  fontWeight: FontWeight.bold,
-                  fontSize: 28,
-                  letterSpacing: 1.5,
+                const SizedBox(height: 16),
+                Text('Gender', style: FormStyles.labelText(context)),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  value: _selectedGender,
+                  decoration: FormStyles.decoration(context),
+                  dropdownColor: FormStyles.dropdownBg(context),
+                  style: fieldStyle,
+                  icon: Icon(Icons.arrow_drop_down, color: iconColor),
+                  items: ['Male', 'Female', 'Other']
+                      .map(
+                        (g) => DropdownMenuItem(
+                          value: g,
+                          child: Text(g, style: fieldStyle),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (v) => setState(() => _selectedGender = v),
+                  validator: (v) => v == null ? 'Select gender' : null,
+                ),
+                    ],
+                  ),
                 ),
               ),
-            ],
+            ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: AppPrimaryButton(
+                label: 'Continue to Upload',
+                icon: Icons.arrow_forward,
+                onPressed: _continue,
+              ),
+            ),
           ),
         ],
       ),

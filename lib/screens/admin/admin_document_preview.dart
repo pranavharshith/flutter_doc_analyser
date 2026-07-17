@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '/utils/theme.dart';
+
 /// Colour-coded OCR bounding-box overlay for an admin document image.
 ///
 /// • Green  → text block matched a verified field
@@ -29,6 +31,7 @@ class _AdminDocumentPreviewState extends State<AdminDocumentPreview>
     with SingleTickerProviderStateMixin {
   bool _showHighlights = true;
   bool _showHint = true;
+  int _imageGen = 0; // bump to force Image.network reload
   late final AnimationController _hintController;
   late final Animation<double> _hintFade;
 
@@ -66,7 +69,7 @@ class _AdminDocumentPreviewState extends State<AdminDocumentPreview>
       children: [
         // ── Background ──────────────────────────────────────────────────
         Container(
-          color: isDark ? const Color(0xFF0A111F) : const Color(0xFFF5F7FA),
+          color: isDark ? AppTheme.bgDark : AppTheme.bgLightAlt,
         ),
 
         // ── Image + Overlay ─────────────────────────────────────────────
@@ -82,8 +85,11 @@ class _AdminDocumentPreviewState extends State<AdminDocumentPreview>
                     // Document image
                     Image.network(
                       widget.fileUrl,
+                      key: ValueKey('${widget.fileUrl}_$_imageGen'),
                       fit: BoxFit.contain,
                       width: constraints.maxWidth,
+                      // Cap decode size for large admin images.
+                      cacheWidth: 1200,
                       loadingBuilder: (context, child, progress) {
                         if (progress == null) return child;
                         return Center(
@@ -95,10 +101,19 @@ class _AdminDocumentPreviewState extends State<AdminDocumentPreview>
                                     ? progress.cumulativeBytesLoaded /
                                         progress.expectedTotalBytes!
                                     : null,
-                                color: const Color(0xFF415A77),
+                                color: isDark
+                                    ? AppTheme.accentBlue
+                                    : AppTheme.primaryMid,
                               ),
                               const SizedBox(height: 12),
-                              const Text('Loading document…'),
+                              Text(
+                                'Loading document…',
+                                style: TextStyle(
+                                  color: isDark
+                                      ? AppTheme.accentBlue
+                                      : AppTheme.textMuted,
+                                ),
+                              ),
                             ],
                           ),
                         );
@@ -107,17 +122,29 @@ class _AdminDocumentPreviewState extends State<AdminDocumentPreview>
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.broken_image_outlined,
-                                size: 64,
-                                color: isDark
-                                    ? const Color(0xFFB0C4DE)
-                                    : const Color(0xFF6B7280)),
+                            Icon(
+                              Icons.broken_image_outlined,
+                              size: 64,
+                              color: isDark
+                                  ? AppTheme.accentBlue
+                                  : AppTheme.textMuted,
+                            ),
                             const SizedBox(height: 12),
-                            Text('Could not load image',
-                                style: TextStyle(
-                                    color: isDark
-                                        ? const Color(0xFFB0C4DE)
-                                        : const Color(0xFF6B7280))),
+                            Text(
+                              'Could not load image',
+                              style: TextStyle(
+                                color: isDark
+                                    ? AppTheme.accentBlue
+                                    : AppTheme.textMuted,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextButton.icon(
+                              onPressed: () =>
+                                  setState(() => _imageGen++),
+                              icon: const Icon(Icons.refresh),
+                              label: const Text('Retry'),
+                            ),
                           ],
                         ),
                       ),
@@ -182,8 +209,8 @@ class _AdminDocumentPreviewState extends State<AdminDocumentPreview>
                 child: Wrap(
                   spacing: 8,
                   children: const [
-                    _LegendChip(color: Color(0xFF10B981), label: 'Verified'),
-                    _LegendChip(color: Color(0xFFF59E0B), label: 'Partial'),
+                    _LegendChip(color: AppTheme.successGreen, label: 'Matched'),
+                    _LegendChip(color: AppTheme.warningAmber, label: 'Partial'),
                     _LegendChip(color: Color(0xFF94A3B8), label: 'Extracted'),
                   ],
                 ),
@@ -198,12 +225,12 @@ class _AdminDocumentPreviewState extends State<AdminDocumentPreview>
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
                     color: _showHighlights
-                        ? const Color(0xFF415A77)
+                        ? AppTheme.primaryMid
                         : Colors.black45,
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
                       color: _showHighlights
-                          ? const Color(0xFF415A77)
+                          ? AppTheme.primaryMid
                           : Colors.white38,
                     ),
                   ),
@@ -221,7 +248,9 @@ class _AdminDocumentPreviewState extends State<AdminDocumentPreview>
                       Text(
                         _showHighlights ? 'Hide' : 'Show',
                         style: const TextStyle(
-                            color: Colors.white, fontSize: 12),
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
@@ -250,8 +279,8 @@ class _OcrHighlightPainter extends CustomPainter {
     required this.verifiedFields,
   });
 
-  static const _verifiedColor = Color(0xFF10B981);
-  static const _partialColor = Color(0xFFF59E0B);
+  static const _verifiedColor = AppTheme.successGreen;
+  static const _partialColor = AppTheme.warningAmber;
   static const _extractedColor = Color(0xFF94A3B8);
 
   /// Returns the field key name that matches the block text, or null.
@@ -316,7 +345,7 @@ class _OcrHighlightPainter extends CustomPainter {
       canvas.drawRRect(
         rRect,
         Paint()
-          ..color = color.withOpacity(0.15)
+          ..color = color.withValues(alpha: 0.15)
           ..style = PaintingStyle.fill,
       );
 
@@ -324,7 +353,7 @@ class _OcrHighlightPainter extends CustomPainter {
       canvas.drawRRect(
         rRect,
         Paint()
-          ..color = color.withOpacity(0.85)
+          ..color = color.withValues(alpha: 0.85)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 2.0,
       );

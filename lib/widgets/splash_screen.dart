@@ -1,32 +1,31 @@
 import 'package:flutter/material.dart';
+import '/providers/theme_controller.dart';
+import '/utils/theme.dart';
 
 class CustomSplashScreen extends StatefulWidget {
-  final bool isDarkMode;
   final VoidCallback? onAnimationComplete;
 
   const CustomSplashScreen({
     super.key,
-    this.isDarkMode = false,
     this.onAnimationComplete,
   });
 
   @override
-  _CustomSplashScreenState createState() => _CustomSplashScreenState();
+  State<CustomSplashScreen> createState() => _CustomSplashScreenState();
 }
 
 class _CustomSplashScreenState extends State<CustomSplashScreen>
     with TickerProviderStateMixin {
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
-  final int _displayDuration = 2000; // 2 seconds as requested
+  final int _displayDuration = 2000;
 
   @override
   void initState() {
     super.initState();
 
-    // Fade animation for content
     _fadeController = AnimationController(
-      duration: const Duration(milliseconds: 1000), // Smooth fade over 1 second
+      duration: const Duration(milliseconds: 1000),
       vsync: this,
     );
 
@@ -37,10 +36,8 @@ class _CustomSplashScreenState extends State<CustomSplashScreen>
       ),
     );
 
-    // Start animation once
     _fadeController.forward();
 
-    // Ensure the splash screen displays for exactly 2 seconds
     Future.delayed(Duration(milliseconds: _displayDuration), () {
       if (mounted && widget.onAnimationComplete != null) {
         widget.onAnimationComplete!();
@@ -56,21 +53,17 @@ class _CustomSplashScreenState extends State<CustomSplashScreen>
 
   @override
   Widget build(BuildContext context) {
+    final isDark = context.isDarkMode;
+
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(
           gradient: RadialGradient(
             center: Alignment.center,
             radius: 1.5,
-            colors: widget.isDarkMode
-                ? [
-                    Colors.blueGrey[900]!,
-                    Colors.black87,
-                  ]
-                : [
-                    Colors.blue[100]!,
-                    Colors.white,
-                  ],
+            colors: isDark
+                ? const [AppTheme.surfaceDark, AppTheme.bgDark]
+                : [AppTheme.accentBlue.withValues(alpha: 0.35), AppTheme.bgLight],
           ),
         ),
         child: Center(
@@ -79,25 +72,22 @@ class _CustomSplashScreenState extends State<CustomSplashScreen>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Logo without container, matching the image
                 Image.asset(
                   'assets/vortex_splash.png',
                   width: 200,
                   height: 200,
                 ),
                 const SizedBox(height: 32),
-                // App title
                 Text(
                   'Vortex',
                   style: TextStyle(
                     fontSize: 40,
                     fontWeight: FontWeight.w900,
                     letterSpacing: 1.5,
-                    color: widget.isDarkMode ? Colors.white : Colors.blue[900],
+                    color: isDark ? AppTheme.textOnDark : AppTheme.primaryDark,
                   ),
                 ),
                 const SizedBox(height: 12),
-                // Subtitle
                 Text(
                   'Vision-Oriented Recognition\nand Text Extraction',
                   textAlign: TextAlign.center,
@@ -106,24 +96,22 @@ class _CustomSplashScreenState extends State<CustomSplashScreen>
                     fontWeight: FontWeight.w500,
                     height: 1.6,
                     letterSpacing: 0.8,
-                    color: widget.isDarkMode
-                        ? Colors.white70
-                        : Colors.blueGrey[700],
+                    color: isDark
+                        ? AppTheme.accentBlue
+                        : AppTheme.textMuted,
                   ),
                 ),
                 const SizedBox(height: 40),
-                // Loading indicator
                 SizedBox(
                   width: 50,
                   height: 50,
                   child: CircularProgressIndicator(
                     strokeWidth: 4,
                     valueColor: AlwaysStoppedAnimation<Color>(
-                      widget.isDarkMode ? Colors.blue[300]! : Colors.blue[600]!,
+                      isDark ? AppTheme.accentBlue : AppTheme.primaryMid,
                     ),
-                    backgroundColor: widget.isDarkMode
-                        ? Colors.white.withOpacity(0.1)
-                        : Colors.blue.withOpacity(0.1),
+                    backgroundColor: (isDark ? Colors.white : AppTheme.primaryMid)
+                        .withValues(alpha: 0.12),
                   ),
                 ),
               ],

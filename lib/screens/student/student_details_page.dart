@@ -2,21 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '/screens/auth/auth_page.dart';
 import '/screens/student/dashboard/dashboard_screen.dart';
+import '/ui/dialogs.dart';
+import '/ui/ui.dart';
 import '/utils/app_constants.dart';
+import '/utils/app_snackbar.dart';
+import '/utils/name_utils.dart';
+import '/utils/theme.dart';
+import '/widgets/theme_toggle_button.dart';
 
 class StudentDetailsPage extends StatefulWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
-
-  const StudentDetailsPage({
-    super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
-  });
+  const StudentDetailsPage({super.key});
 
   @override
-  _StudentDetailsPageState createState() => _StudentDetailsPageState();
+  State<StudentDetailsPage> createState() => _StudentDetailsPageState();
 }
 
 class _StudentDetailsPageState extends State<StudentDetailsPage> {
@@ -26,18 +27,61 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
   final _phoneController = TextEditingController();
   final _emailController = TextEditingController();
   bool _isLoading = false;
-  String _selectedCountryCode = '+91'; // Default to India
+  String _selectedCountryCode = '+91';
 
   @override
   void initState() {
     super.initState();
-    _loadUserEmail();
+    _prefillFromAccount();
   }
 
-  void _loadUserEmail() {
+  Future<void> _prefillFromAccount() async {
     final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      _emailController.text = user.email ?? '';
+    if (user == null) return;
+    _emailController.text = user.email ?? '';
+
+    try {
+      final student = await FirebaseFirestore.instance
+          .collection('students')
+          .doc(user.uid)
+          .get();
+      if (student.exists) {
+        final data = student.data()!;
+        final first = (data['firstName'] as String?)?.trim() ?? '';
+        final last = (data['lastName'] as String?)?.trim() ?? '';
+        if (first.isNotEmpty) _nameController.text = first;
+        if (last.isNotEmpty) _lastNameController.text = last;
+        if (first.isEmpty && last.isEmpty) {
+          final name = (data['name'] as String?)?.trim() ?? '';
+          if (name.isNotEmpty) {
+            final split = NameUtils.splitFullName(name);
+            _nameController.text = split.firstName;
+            _lastNameController.text = split.lastName;
+          }
+        }
+        final phone = (data['phone'] as String?)?.trim();
+        if (phone != null && phone.isNotEmpty && !phone.startsWith('+')) {
+          _phoneController.text = phone;
+        }
+      }
+
+      if (_nameController.text.isEmpty) {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .get();
+        if (userDoc.exists) {
+          final name = (userDoc.data()?['name'] as String?)?.trim() ?? '';
+          if (name.isNotEmpty) {
+            final split = NameUtils.splitFullName(name);
+            _nameController.text = split.firstName;
+            _lastNameController.text = split.lastName;
+          }
+        }
+      }
+      if (mounted) setState(() {});
+    } catch (_) {
+      // Prefill is best-effort
     }
   }
 
@@ -50,16 +94,28 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
     super.dispose();
   }
 
-  // Email validation regex
   String? _validateEmail(String? value) {
-    if (value == null || value.isEmpty) {
-      return 'Please enter your email';
-    }
-    final emailRegex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
+    if (value == null || value.isEmpty) return 'Please enter your email';
+    final emailRegex = RegExp(r'^[\w\-.]+@([\w-]+\.)+[\w-]{2,4}$');
     if (!emailRegex.hasMatch(value)) {
       return 'Please enter a valid email address';
     }
     return null;
+  }
+
+  Future<void> _signOut() async {
+    final confirmed = await AppDialogs.confirmLogout(context);
+    if (!confirmed || !mounted) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('hasSubmittedDetails');
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const AuthPage()),
+      (_) => false,
+    );
   }
 
   Future<void> _submitDetails() async {
@@ -71,24 +127,32 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) throw Exception('No user signed in');
 
-      // Create a new document in the students collection
-      await FirebaseFirestore.instance
-          .collection('students')
-          .doc(user.uid)
-          .set({
-        'firstName': _nameController.text,
-        'lastName': _lastNameController.text,
+      final nameFields = NameUtils.firestoreNameFields(
+        firstName: _nameController.text,
+        lastName: _lastNameController.text,
+      );
+
+      await FirebaseFirestore.instance.collection('students').doc(user.uid).set({
+        ...nameFields,
         'phone': '$_selectedCountryCode${_phoneController.text.trim()}',
         'email': _emailController.text.trim(),
         'role': 'student',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+      }, SetOptions(merge: true));
 
-      // Create document placeholders for each document type
-      final documentTypes = AppConstants.documentTypes.map((type) => type.toLowerCase().replaceAll(' ', '_')).toList();
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'name': nameFields['name'],
+        'email': _emailController.text.trim(),
+        'role': AppConstants.roleStudent,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
 
-      for (var docType in documentTypes) {
+      final documentTypes = AppConstants.documentTypes
+          .map((type) => type.toLowerCase().replaceAll(' ', '_'))
+          .toList();
+
+      for (final docType in documentTypes) {
         await FirebaseFirestore.instance
             .collection('students')
             .doc(user.uid)
@@ -99,380 +163,146 @@ class _StudentDetailsPageState extends State<StudentDetailsPage> {
           'locked': false,
           'createdAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
-        });
+        }, SetOptions(merge: true));
       }
 
       if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text("Details submitted successfully"),
-          backgroundColor: Colors.green,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      );
-
+      AppSnackBar.success(context, 'Details submitted successfully');
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
-          builder: (_) => StudentDashboard(
-            toggleDarkMode: widget.toggleDarkMode,
-            isDarkMode: widget.isDarkMode,
-          ),
-        ),
+        MaterialPageRoute(builder: (_) => const StudentDashboard()),
       );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Error: ${e.toString()}"),
-          backgroundColor: Colors.red,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      );
+    } catch (_) {
+      if (mounted) {
+        AppSnackBar.error(context, 'Could not save details. Please try again.');
+      }
     }
 
-    setState(() => _isLoading = false);
+    if (mounted) setState(() => _isLoading = false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: Icon(
-              isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
-              color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
-            ),
-            tooltip: "Toggle Theme",
-            onPressed: widget.toggleDarkMode,
-          ),
-        ],
-      ),
-      extendBodyBehindAppBar: true,
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: isDarkMode
-                ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
+    final fieldStyle = FormStyles.fieldText(context);
+    final muted = FormStyles.muted(context);
+
+    return AppScaffold(
+      title: 'Complete your profile',
+      showBackButton: false,
+      actions: [
+        const ThemeToggleButton(color: AppTheme.bgLight),
+        IconButton(
+          tooltip: 'Sign out',
+          icon: const Icon(Icons.logout, color: AppTheme.bgLight),
+          onPressed: _isLoading ? null : _signOut,
         ),
-        child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.all(24.0),
+      ],
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            Text(
+              'VORTEX',
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 2,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Tell us a bit about yourself to continue.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: muted,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            AppCard(
+              child: Form(
+                key: _formKey,
                 child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // App Name
                     Text(
-                      'VORTEX',
-                      style: TextStyle(
-                        color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 42,
-                        letterSpacing: 2.0,
-                      ),
+                      'Student details',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
                     ),
-
-                    const SizedBox(height: 40),
-
-                    // Container for the form
-                    Container(
-                      decoration: BoxDecoration(
-                        color: isDarkMode 
-                            ? const Color(0xFF2A3A5A).withOpacity(0.9) 
-                            : const Color(0xFFFFFFFF).withOpacity(0.9),
-                        borderRadius: BorderRadius.circular(10),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 10,
-                            offset: const Offset(0, 5),
-                          ),
-                        ],
+                    const SizedBox(height: 20),
+                    TextFormField(
+                      controller: _nameController,
+                      style: fieldStyle,
+                      decoration: FormStyles.decoration(
+                        context,
+                        hintText: 'First name',
                       ),
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        children: [
-                          // Title
-                          Text(
-                            'Student Details',
-                            style: TextStyle(
-                              color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
-                              fontSize: 28,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-
-                          const SizedBox(height: 30),
-
-                          // Form
-                          Form(
-                            key: _formKey,
-                            child: Column(
-                              children: [
-                                // First Name
-                                TextFormField(
-                                  controller: _nameController,
-                                  style: TextStyle(
-                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
-                                  ),
-                                  decoration: InputDecoration(
-                                    hintText: 'First Name',
-                                    hintStyle: TextStyle(
-                                      color: isDarkMode ? Colors.white54 : const Color(0xFF6B7280),
-                                    ),
-                                    filled: true,
-                                    fillColor: isDarkMode ? const Color(0xFF1B263B) : const Color(0xFFF1F5F9),
-                                    border: const OutlineInputBorder(
-                                      borderRadius: BorderRadius.all(
-                                        Radius.circular(8),
-                                      ),
-                                      borderSide: BorderSide.none,
-                                    ),
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 20,
-                                      vertical: 16,
-                                    ),
-                                    errorStyle: const TextStyle(
-                                      color: Color(0xFFEF4444),
-                                    ),
-                                  ),
-                                  validator: (value) {
-                                    if (value == null || value.isEmpty) {
-                                      return 'Please enter your first name';
-                                    }
-                                    return null;
-                                  },
-                                  autovalidateMode:
-                                      AutovalidateMode.onUserInteraction,
-                                  buildCounter: (
-                                    context, {
-                                    required currentLength,
-                                    required isFocused,
-                                    maxLength,
-                                  }) =>
-                                      null,
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Last Name
-                                TextFormField(
-                                  controller: _lastNameController,
-                                  style: TextStyle(
-                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
-                                  ),
-                                  decoration: InputDecoration(
-                                    hintText: 'Last Name',
-                                    hintStyle: TextStyle(
-                                      color: isDarkMode ? Colors.white54 : const Color(0xFF6B7280),
-                                    ),
-                                    filled: true,
-                                    fillColor: isDarkMode ? const Color(0xFF1B263B) : const Color(0xFFF1F5F9),
-                                    border: const OutlineInputBorder(
-                                      borderRadius: BorderRadius.all(
-                                        Radius.circular(8),
-                                      ),
-                                      borderSide: BorderSide.none,
-                                    ),
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 20,
-                                      vertical: 16,
-                                    ),
-                                    errorStyle: const TextStyle(
-                                      color: Color(0xFFEF4444),
-                                    ),
-                                  ),
-                                  validator: (value) {
-                                    if (value == null || value.isEmpty) {
-                                      return 'Please enter your last name';
-                                    }
-                                    return null;
-                                  },
-                                  autovalidateMode:
-                                      AutovalidateMode.onUserInteraction,
-                                  buildCounter: (
-                                    context, {
-                                    required currentLength,
-                                    required isFocused,
-                                    maxLength,
-                                  }) =>
-                                      null,
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Email
-                                TextFormField(
-                                  controller: _emailController,
-                                  style: TextStyle(
-                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
-                                  ),
-                                  decoration: InputDecoration(
-                                    hintText: 'Email',
-                                    hintStyle: TextStyle(
-                                      color: isDarkMode ? Colors.white54 : const Color(0xFF6B7280),
-                                    ),
-                                    filled: true,
-                                    fillColor: isDarkMode ? const Color(0xFF1B263B) : const Color(0xFFF1F5F9),
-                                    border: const OutlineInputBorder(
-                                      borderRadius: BorderRadius.all(
-                                        Radius.circular(8),
-                                      ),
-                                      borderSide: BorderSide.none,
-                                    ),
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 20,
-                                      vertical: 16,
-                                    ),
-                                    errorStyle: const TextStyle(
-                                      color: Color(0xFFEF4444),
-                                    ),
-                                  ),
-                                  validator: _validateEmail,
-                                  autovalidateMode:
-                                      AutovalidateMode.onUserInteraction,
-                                  buildCounter: (
-                                    context, {
-                                    required currentLength,
-                                    required isFocused,
-                                    maxLength,
-                                  }) =>
-                                      null,
-                                ),
-
-                                const SizedBox(height: 16),
-
-                                // Phone Number with Country Code Dropdown
-                                IntlPhoneField(
-                                  controller: _phoneController,
-                                  style: TextStyle(
-                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
-                                  ),
-                                  dropdownTextStyle: TextStyle(
-                                    color: isDarkMode ? Colors.white : const Color(0xFF1B263B),
-                                  ),
-                                  decoration: InputDecoration(
-                                    hintText: 'Phone Number',
-                                    hintStyle: TextStyle(
-                                      color: isDarkMode ? Colors.white54 : const Color(0xFF6B7280),
-                                    ),
-                                    filled: true,
-                                    fillColor: isDarkMode ? const Color(0xFF1B263B) : const Color(0xFFF1F5F9),
-                                    border: const OutlineInputBorder(
-                                      borderRadius: BorderRadius.all(
-                                        Radius.circular(8),
-                                      ),
-                                      borderSide: BorderSide.none,
-                                    ),
-                                    contentPadding: const EdgeInsets.symmetric(
-                                      horizontal: 20,
-                                      vertical: 16,
-                                    ),
-                                    errorStyle: const TextStyle(
-                                      color: Color(0xFFEF4444),
-                                    ),
-                                  ),
-                                  initialCountryCode: 'IN', // Default to India
-                                  onChanged: (phone) {
-                                    setState(() {
-                                      _selectedCountryCode = phone.countryCode;
-                                    });
-                                  },
-                                  validator: (phone) {
-                                    if (phone == null || phone.number.isEmpty) {
-                                      return 'Please enter your phone number';
-                                    }
-                                    // Validate length based on country code
-                                    if (_selectedCountryCode == '+91' &&
-                                        phone.number.length != 10) {
-                                      return 'Indian phone numbers must be 10 digits';
-                                    }
-                                    if (_selectedCountryCode == '+1' &&
-                                        phone.number.length != 10) {
-                                      return 'US/Canada phone numbers must be 10 digits';
-                                    }
-                                    if (_selectedCountryCode == '+44' &&
-                                        phone.number.length != 10) {
-                                      return 'UK phone numbers must be 10 digits';
-                                    }
-                                    if (_selectedCountryCode == '+61' &&
-                                        phone.number.length != 10) {
-                                      return 'Australian phone numbers must be 10 digits';
-                                    }
-                                    return null;
-                                  },
-                                  autovalidateMode:
-                                      AutovalidateMode.onUserInteraction,
-                                ),
-
-                                const SizedBox(height: 30),
-
-                                // Submit Button
-                                Container(
-                                  width: double.infinity,
-                                  height: 50,
-                                  decoration: BoxDecoration(
-                                    gradient: const LinearGradient(
-                                      begin: Alignment.centerLeft,
-                                      end: Alignment.centerRight,
-                                      colors: [
-                                        Color(0xFF415A77),
-                                        Color(0xFF1B263B),
-                                      ],
-                                    ),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: ElevatedButton(
-                                    onPressed:
-                                        _isLoading ? null : _submitDetails,
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.transparent,
-                                      shadowColor: Colors.transparent,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                    ),
-                                    child: _isLoading
-                                        ? const CircularProgressIndicator(
-                                            color: Colors.white,
-                                          )
-                                        : const Text(
-                                            'Submit Details',
-                                            style: TextStyle(
-                                              fontSize: 18,
-                                              fontWeight: FontWeight.bold,
-                                              color: Color(0xFFFFFFFF),
-                                            ),
-                                          ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? 'Please enter your first name'
+                          : null,
+                      autovalidateMode: AutovalidateMode.onUserInteraction,
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _lastNameController,
+                      style: fieldStyle,
+                      decoration: FormStyles.decoration(
+                        context,
+                        hintText: 'Last name',
                       ),
+                      validator: (v) => (v == null || v.trim().isEmpty)
+                          ? 'Please enter your last name'
+                          : null,
+                      autovalidateMode: AutovalidateMode.onUserInteraction,
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _emailController,
+                      style: fieldStyle,
+                      keyboardType: TextInputType.emailAddress,
+                      decoration: FormStyles.decoration(
+                        context,
+                        hintText: 'Email',
+                      ),
+                      validator: _validateEmail,
+                      autovalidateMode: AutovalidateMode.onUserInteraction,
+                    ),
+                    const SizedBox(height: 16),
+                    IntlPhoneField(
+                      controller: _phoneController,
+                      style: fieldStyle,
+                      dropdownTextStyle: fieldStyle,
+                      decoration: FormStyles.decoration(
+                        context,
+                        hintText: 'Phone number',
+                      ),
+                      initialCountryCode: 'IN',
+                      onChanged: (phone) {
+                        _selectedCountryCode = phone.countryCode;
+                      },
+                      validator: (phone) {
+                        if (phone == null || phone.number.isEmpty) {
+                          return 'Please enter your phone number';
+                        }
+                        if (_selectedCountryCode == '+91' &&
+                            phone.number.length != 10) {
+                          return 'Indian phone numbers must be 10 digits';
+                        }
+                        return null;
+                      },
+                      autovalidateMode: AutovalidateMode.onUserInteraction,
+                    ),
+                    const SizedBox(height: 28),
+                    AppPrimaryButton(
+                      label: 'Submit details',
+                      isLoading: _isLoading,
+                      onPressed: _isLoading ? null : _submitDetails,
                     ),
                   ],
                 ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );

@@ -1,32 +1,86 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import '/screens/auth/auth_page.dart';
-import '/screens/student/dashboard/dashboard_screen.dart';
-import '/screens/student/student_details_page.dart';
-import '/screens/admin/admin_dashboard_screen.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+
 import 'firebase_options.dart';
-import 'widgets/splash_screen.dart';
+import 'providers/theme_controller.dart';
+import 'ui/ui.dart';
+import 'utils/auth_routing.dart';
 import 'utils/profile_image_notifier.dart';
-import 'utils/app_constants.dart';
-import 'utils/theme.dart'; // FIX: use custom AppTheme
+import 'utils/theme.dart';
+import 'widgets/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  final themeController = ThemeController();
+  await themeController.load();
+
+  // Product is mobile-only (Android / iOS). Keep `web/` scaffold for a future
+  // port, but do not run auth/OCR/upload flows in the browser.
+  if (kIsWeb) {
+    runApp(
+      ThemeScope(
+        controller: themeController,
+        child: ListenableBuilder(
+          listenable: themeController,
+          builder: (context, _) {
+            return MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: AppTheme.light(),
+              darkTheme: AppTheme.dark(),
+              themeMode: themeController.themeMode,
+              home: const Scaffold(
+                body: AppEmptyState(
+                  icon: Icons.phone_android,
+                  title: 'Vortex is a mobile app',
+                  message:
+                      'Use the Android or iOS build for document scanning, '
+                      'OCR, and admin review. Web is not supported.',
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    return;
+  }
+
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+
     await ProfileImageNotifier.init();
-    runApp(const MyApp());
+
+    runApp(MyApp(themeController: themeController));
   } catch (e) {
-    print('Failed to initialize Firebase: $e');
+    debugPrint('Failed to initialize app: $e');
     runApp(
-      MaterialApp(
-        home: Scaffold(
-          body: Center(child: Text('Failed to initialize app: $e')),
+      ThemeScope(
+        controller: themeController,
+        child: ListenableBuilder(
+          listenable: themeController,
+          builder: (context, _) {
+            return MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: AppTheme.light(),
+              darkTheme: AppTheme.dark(),
+              themeMode: themeController.themeMode,
+              home: const Scaffold(
+                body: AppEmptyState(
+                  icon: Icons.cloud_off_outlined,
+                  title: 'Failed to initialize app',
+                  message:
+                      'Please check your connection and fully restart the app.',
+                ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -34,39 +88,50 @@ void main() async {
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  final ThemeController themeController;
+
+  const MyApp({super.key, required this.themeController});
 
   @override
-  _MyAppState createState() => _MyAppState();
+  State<MyApp> createState() => _MyAppState();
 }
 
 class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
-  bool _isDarkMode = false;
   bool _showSplashScreen = true;
   bool _isFreshLaunch = true;
-
-  // Cache only the "where should we land" decision (not the widget instance),
-  // so theme toggles rebuild pages with the latest `isDarkMode`.
-  Future<_InitialDestination>? _initialDestinationFuture;
+  Future<AppHomeDestination>? _initialDestinationFuture;
+  StreamSubscription<User?>? _authSub;
+  String? _lastUid;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadDarkModePref();
-  }
-
-  Future<void> _loadDarkModePref() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
+    // AUTH-04: re-route when session changes / expires.
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      final uid = user?.uid;
+      if (uid == _lastUid) return;
+      _lastUid = uid;
+      if (!mounted) return;
       setState(() {
-        _isDarkMode = prefs.getBool(AppConstants.prefDarkMode) ?? false;
+        _initialDestinationFuture = null;
+        if (user != null) {
+          ProfileImageNotifier.init();
+        } else {
+          ProfileImageNotifier.clear();
+        }
+        // After first frame, skip splash on session switches.
+        if (!_isFreshLaunch || !_showSplashScreen) {
+          _showSplashScreen = false;
+          _initialDestinationFuture = AuthRouting.resolveHomeDestination();
+        }
       });
-    }
+    });
   }
 
   @override
   void dispose() {
+    _authSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -75,150 +140,75 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
-      setState(() {
-        _isFreshLaunch = false;
-      });
+      setState(() => _isFreshLaunch = false);
     } else if (state == AppLifecycleState.detached) {
       setState(() {
         _isFreshLaunch = true;
         _showSplashScreen = true;
-        _initialDestinationFuture = null; // Reset cache on full app close
+        _initialDestinationFuture = null;
       });
-    }
-  }
-
-  void toggleDarkMode() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _isDarkMode = !_isDarkMode;
-      // Do NOT reset the destination cache; only theme changes.
-    });
-    await prefs.setBool(AppConstants.prefDarkMode, _isDarkMode);
-  }
-
-  Future<_InitialDestination> _getInitialDestination() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user != null) {
-        await ProfileImageNotifier.init();
-        final userDoc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .get();
-        final role = userDoc.exists ? userDoc.data()!['role'] : 'student';
-
-        if (role == 'admin') {
-          return _InitialDestination.adminDashboard;
-        }
-
-        final studentDoc = await FirebaseFirestore.instance
-            .collection('students')
-            .doc(user.uid)
-            .get();
-
-        if (studentDoc.exists &&
-            (studentDoc.data() as Map<String, dynamic>)
-                .containsKey('firstName')) {
-          return _InitialDestination.studentDashboard;
-        } else {
-          return _InitialDestination.studentDetails;
-        }
-      }
-      return _InitialDestination.auth;
-    } catch (e) {
-      print('Error in _getInitialScreen: $e');
-      return _InitialDestination.error;
     }
   }
 
   void _onSplashAnimationComplete() {
     setState(() {
       _showSplashScreen = false;
-      _initialDestinationFuture ??= _getInitialDestination();
+      _initialDestinationFuture ??= AuthRouting.resolveHomeDestination();
     });
   }
 
-  Widget _buildHomeForDestination(_InitialDestination dest) {
-    switch (dest) {
-      case _InitialDestination.adminDashboard:
-        return AdminDashboardScreen(
-          toggleDarkMode: toggleDarkMode,
-          isDarkMode: _isDarkMode,
-        );
-      case _InitialDestination.studentDashboard:
-        return StudentDashboard(
-          toggleDarkMode: toggleDarkMode,
-          isDarkMode: _isDarkMode,
-        );
-      case _InitialDestination.studentDetails:
-        return StudentDetailsPage(
-          toggleDarkMode: toggleDarkMode,
-          isDarkMode: _isDarkMode,
-        );
-      case _InitialDestination.auth:
-        return AuthPage(toggleDarkMode: toggleDarkMode, isDarkMode: _isDarkMode);
-      case _InitialDestination.error:
-        return Scaffold(
-          body: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text('Error loading app'),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  onPressed: () async {
-                    await FirebaseAuth.instance.signOut();
-                    if (!mounted) return;
-                    setState(() {
-                      _initialDestinationFuture = null;
-                    });
-                  },
-                  child: const Text('Return to Login'),
-                ),
-              ],
-            ),
-          ),
-        );
-    }
+  void _retryDestination() {
+    setState(() => _initialDestinationFuture = null);
   }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Vortex Dashboard',
-      // FIX: Use AppTheme instead of raw ThemeData.dark()/light()
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
-      themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
-      home: _isFreshLaunch && _showSplashScreen
-          ? CustomSplashScreen(
-              isDarkMode: _isDarkMode,
-              onAnimationComplete: _onSplashAnimationComplete,
-            )
-          : FutureBuilder<_InitialDestination>(
-              future: _initialDestinationFuture ??= _getInitialDestination(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return CustomSplashScreen(isDarkMode: _isDarkMode);
-                }
-                if (snapshot.hasError) {
-                  return Scaffold(
-                    body: Center(child: Text('Error: ${snapshot.error}')),
-                  );
-                }
-                final dest = snapshot.data ?? _InitialDestination.auth;
-                return _buildHomeForDestination(dest);
-              },
-            ),
+    final themeController = widget.themeController;
+
+    return ThemeScope(
+      controller: themeController,
+      child: ListenableBuilder(
+        listenable: themeController,
+        builder: (context, _) {
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            title: 'Vortex Dashboard',
+            theme: AppTheme.light(),
+            darkTheme: AppTheme.dark(),
+            themeMode: themeController.themeMode,
+            home: _isFreshLaunch && _showSplashScreen
+                ? CustomSplashScreen(
+                    onAnimationComplete: _onSplashAnimationComplete,
+                  )
+                : FutureBuilder<AppHomeDestination>(
+                    future: _initialDestinationFuture ??=
+                        AuthRouting.resolveHomeDestination(),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState ==
+                          ConnectionState.waiting) {
+                        return const CustomSplashScreen();
+                      }
+                      if (snapshot.hasError) {
+                        return Scaffold(
+                          body: AppEmptyState.error(
+                            title: 'Error loading app',
+                            message: '${snapshot.error}',
+                            actionLabel: 'Retry',
+                            onAction: _retryDestination,
+                          ),
+                        );
+                      }
+                      final dest =
+                          snapshot.data ?? AppHomeDestination.auth;
+                      return AuthRouting.buildHome(
+                        dest,
+                        onRetry: _retryDestination,
+                      );
+                    },
+                  ),
+          );
+        },
+      ),
     );
   }
-}
-
-enum _InitialDestination {
-  auth,
-  adminDashboard,
-  studentDashboard,
-  studentDetails,
-  error,
 }

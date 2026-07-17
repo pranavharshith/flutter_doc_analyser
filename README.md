@@ -1,95 +1,100 @@
-# Vortex-app
+# Vortex
 
-Vortex-app is a Flutter-based mobile application designed for document text recognition and analysis, primarily targeting students. The app allows users to scan/upload documents, extract text using Google ML Kit, and compare the recognized text with information provided by the student. This helps ensure accuracy in document verification for educational use cases.
+Flutter app for **student document verification**. Students upload Aadhaar, Voter ID, and marksheets; on-device OCR extracts text; admins review, verify, or reject.
 
-## Features
-
-- Scan and upload documents using the device camera or file picker.
-- Extract text from documents with Google ML Kit for high accuracy.
-- Compare extracted text with user-provided (student) information.
-- Firebase authentication and Firestore integration for secure data storage and management.
-- User-friendly and responsive Flutter UI.
-- Local file storage and preferences support.
-- Toast notifications for user feedback.
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Usage](#usage)
-- [Project Structure](#project-structure)
-- [Dependencies](#dependencies)
-- [Contributing](#contributing)
-- [License](#license)
-
-## Installation
-
-1. **Clone the repository**
-    ```bash
-    git clone https://github.com/k-vaidoorya/Vortex-app.git
-    cd Vortex-app
-    ```
-
-2. **Install dependencies**
-    ```bash
-    flutter clean
-    flutter pub get
-    ```
-
-3. **Run the application**
-    ```bash
-    flutter run
-    ```
-
-## Usage
-
-1. Open the app on your mobile device or emulator.
-2. Follow the instructions to upload or scan a document.
-3. Enter the expected information as prompted.
-4. The app will extract and analyze the text, providing a comparison with the entered data.
-5. Results, notifications, and next steps will be displayed in the app.
-
-## Project Structure
-
-```
-Vortex-app/
-├── lib/
-│   ├── main.dart
-│   ├── [feature folders and Dart files]
-├── assets/
-│   ├── vortex_icon.jpg
-│   ├── vortex_splash.png
-├── ios/
-│   └── Runner/Assets.xcassets/LaunchImage.imageset/
-├── android/
-├── pubspec.yaml
-├── README.md
-└── ...
-```
-
-## Dependencies
-
-Key dependencies used in this project include:
-- `google_mlkit_text_recognition`: Text extraction from images/documents.
-- `firebase_auth`, `firebase_core`, `cloud_firestore`: Backend authentication and storage.
-- `shared_preferences`, `path_provider`: Local data storage.
-- `image_picker`, `file_picker`: Document and image uploading.
-- `fluttertoast`: User notifications.
-- `intl_phone_field`, `intl`: Internationalization support.
-
-For the full list, see [`pubspec.yaml`](pubspec.yaml).
-
-## Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. Fork the repository.
-2. Create your feature branch: `git checkout -b feature/YourFeature`
-3. Commit your changes: `git commit -m 'Add some feature'`
-4. Push to the branch: `git push origin feature/YourFeature`
-5. Open a Pull Request
-
-Please make sure to update tests as appropriate.
+**Backend:** Firebase Auth, Firestore, Storage — no paid verification APIs.  
+**Workspace:** develop only in `D:\vortex\flutter_doc_analyser` (not OneDrive copies).
 
 ---
 
-For questions, contact [@k-vaidoorya](https://github.com/k-vaidoorya).
+## Features
+
+| Role | Capabilities |
+|------|----------------|
+| **Student** | Auth, profile, upload 4 doc types (camera/gallery/files), OCR match, notifications, re-upload, trash, FAQ, light/dark theme |
+| **Admin** (`@admin.vortexapp.com`) | Dashboard, OCR preview, verify/reject, documents list, reports, notifications, trash, settings |
+
+### Verification pipeline
+
+```
+Pick image → sharpness check → ML Kit OCR → field compare
+  → Verified or Pending → Storage + Firestore (hashes + quality metadata)
+```
+
+On-device helpers in `lib/utils/document_validators.dart`:
+
+| API | Role |
+|-----|------|
+| `validateAadhaar` | Verhoeff check-digit |
+| `hashDocumentNumber` | SHA-256 for duplicate detection (no plaintext IDs) |
+| `extractVoterId` / `isValidVoterIdFormat` | Multi-state EPIC formats |
+| `calculateSharpness` / `qualityFromScore` | Blur gate before OCR |
+
+---
+
+## Layout
+
+```
+lib/
+├── main.dart
+├── components/auth_ui.dart
+├── ui/                          shared kit (scaffold, cards, forms, …)
+├── screens/{auth,student,admin}
+├── services/storage_service.dart
+├── providers/theme_controller.dart
+├── utils/                       validators, theme, constants, snackbar, …
+└── widgets/                     splash, profile image, theme toggle
+
+firestore.rules · storage.rules · firestore.indexes.json
+tools/run_android.bat · tools/clean_locks.ps1
+```
+
+---
+
+## Run
+
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Java\jdk-17"
+$env:PATH = "$env:JAVA_HOME\bin;C:\src\flutter\bin;" + $env:PATH
+cd D:\vortex\flutter_doc_analyser
+flutter pub get
+flutter run
+```
+
+Or: `tools\run_android.bat`
+
+### Deploy rules & indexes (required for production)
+
+Local `firestore.rules` / `firestore.indexes.json` / `storage.rules` apply only after:
+
+```bash
+firebase deploy --only firestore:rules,firestore:indexes,storage --project fire-setup-33812
+```
+
+Needed for Storage uploads, admin collectionGroup queries, and document-hash indexes.
+
+### Tests
+
+```bash
+flutter test
+```
+
+---
+
+## Platforms
+
+| Target | Status |
+|--------|--------|
+| **Android** | Primary — fully supported |
+| **iOS** | Supported once Firebase iOS config / provisioning is set |
+| **Web** | **Not supported** — stub only (folder kept for a future port). Running on web shows a “use the mobile app” screen. |
+
+OCR uses Google ML Kit on-device (mobile). Do not use `flutter run -d chrome` for product testing.
+
+---
+
+## Optional follow-ups
+
+- Enable Firebase Storage in Console, then deploy storage rules  
+- Formal accessibility (TalkBack) pass  
+- Commit/push if local redesign is not yet on remote  

@@ -2,28 +2,29 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '/components/auth_ui.dart';
-import '/screens/auth/auth_page.dart';
+import '/utils/name_utils.dart';
+import '/utils/auth_errors.dart';
+import '/utils/auth_routing.dart';
+import '/utils/app_constants.dart';
+import '/utils/app_snackbar.dart';
 
 class SignUpPage extends StatefulWidget {
   final VoidCallback onToggle;
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
   final TabController tabController;
 
   const SignUpPage({
     required this.onToggle,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
     required this.tabController,
     super.key,
   });
 
   @override
-  _SignUpPageState createState() => _SignUpPageState();
+  State<SignUpPage> createState() => _SignUpPageState();
 }
 
 class _SignUpPageState extends State<SignUpPage> {
   final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
@@ -33,102 +34,82 @@ class _SignUpPageState extends State<SignUpPage> {
   bool _isLoading = false;
 
   void _togglePasswordVisibility() {
-    setState(() {
-      _obscurePassword = !_obscurePassword;
-    });
+    setState(() => _obscurePassword = !_obscurePassword);
   }
 
   void _toggleConfirmPasswordVisibility() {
-    setState(() {
-      _obscureConfirmPassword = !_obscureConfirmPassword;
-    });
+    setState(() => _obscureConfirmPassword = !_obscureConfirmPassword);
   }
 
   Future<void> _signUp() async {
     if (!_formKey.currentState!.validate()) return;
 
     if (_passwordController.text != _confirmPasswordController.text) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Passwords do not match"),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppSnackBar.error(context, 'Passwords do not match');
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
-      final userCredential = await FirebaseAuth.instance
-          .createUserWithEmailAndPassword(
-            email: _emailController.text.trim(),
-            password: _passwordController.text.trim(),
-          );
+      final userCredential =
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
 
-      // Determine role based on email domain
-      String role = 'student';
-      if (_emailController.text.trim().endsWith('@admin.vortexapp.com')) {
-        role = 'admin';
-      }
+      final email = _emailController.text.trim();
+      final role = AuthRouting.isAdminEmail(email)
+          ? AppConstants.roleAdmin
+          : AppConstants.roleStudent;
 
-      // Store user data in 'users' collection
+      final split = NameUtils.splitFullName(_nameController.text);
+      final nameFields = NameUtils.firestoreNameFields(
+        firstName: split.firstName,
+        lastName: split.lastName,
+      );
+
       await FirebaseFirestore.instance
           .collection('users')
           .doc(userCredential.user!.uid)
           .set({
-            'email': _emailController.text.trim(),
-            'createdAt': Timestamp.now(),
-            'role': role,
-          });
+        'email': email,
+        'name': nameFields['name'],
+        'createdAt': FieldValue.serverTimestamp(),
+        'role': role,
+      });
 
-      // Store user data in 'students' collection (if not admin)
-      if (role != 'admin') {
+      if (role != AppConstants.roleAdmin) {
         await FirebaseFirestore.instance
             .collection('students')
             .doc(userCredential.user!.uid)
             .set({
-              'email': _emailController.text.trim(),
-              'role': role,
-              'createdAt': Timestamp.now(),
-            });
+          'email': email,
+          ...nameFields,
+          'role': role,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Sign Up Successful"),
-          backgroundColor: Colors.green,
-        ),
-      );
+      if (!mounted) return;
 
-      // Navigate to SignInPage (via AuthPage)
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder:
-              (context) => AuthPage(
-                toggleDarkMode: widget.toggleDarkMode,
-                isDarkMode: widget.isDarkMode,
-              ),
-        ),
-      );
+      AppSnackBar.success(context, 'Sign up successful');
+      // AUTH-01: already signed in — route by role (not back to login).
+      await AuthRouting.navigateToResolvedHome(context);
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Error: ${e.toString()}"),
-          backgroundColor: Colors.red,
-        ),
-      );
+      if (!mounted) return;
+      AppSnackBar.error(context, AuthErrors.message(e));
     }
 
-    setState(() => _isLoading = false);
+    if (mounted) setState(() => _isLoading = false);
   }
 
   @override
   Widget build(BuildContext context) {
     return buildAuthUI(
-      title: "Sign Up",
+      title: 'Sign Up',
       formKey: _formKey,
+      nameController: _nameController,
       emailController: _emailController,
       passwordController: _passwordController,
       confirmPasswordController: _confirmPasswordController,
@@ -138,8 +119,8 @@ class _SignUpPageState extends State<SignUpPage> {
       toggleConfirmPasswordVisibility: _toggleConfirmPasswordVisibility,
       isLoading: _isLoading,
       onSubmit: _signUp,
-      buttonText: "Sign Up",
-      toggleText: "Already have an account? Sign in",
+      buttonText: 'Sign Up',
+      toggleText: 'Already have an account? Sign in',
       onToggle: widget.onToggle,
       isSignIn: false,
       tabController: widget.tabController,
@@ -148,6 +129,7 @@ class _SignUpPageState extends State<SignUpPage> {
 
   @override
   void dispose() {
+    _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();

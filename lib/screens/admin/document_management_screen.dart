@@ -1,18 +1,15 @@
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+
+import '/ui/ui.dart';
 import '/utils/app_constants.dart';
+import '/utils/theme.dart';
+import '/widgets/theme_toggle_button.dart';
+import 'open_submission.dart';
 
-/// Admin screen showing a searchable list of all students and their
-/// document submission status.
+/// Student roster with per-document status from parent docs (cheap reads).
 class DocumentManagementScreen extends StatefulWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
-
-  const DocumentManagementScreen({
-    super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
-  });
+  const DocumentManagementScreen({super.key});
 
   @override
   State<DocumentManagementScreen> createState() =>
@@ -20,279 +17,262 @@ class DocumentManagementScreen extends StatefulWidget {
 }
 
 class _DocumentManagementScreenState extends State<DocumentManagementScreen> {
-  bool get _isDarkMode => Theme.of(context).brightness == Brightness.dark;
+  final _searchController = TextEditingController();
   String _searchQuery = '';
+  int _generation = 0;
+  late Stream<QuerySnapshot> _studentsStream;
 
-  static const List<String> _documentTypes = AppConstants.documentTypes;
+  @override
+  void initState() {
+    super.initState();
+    _studentsStream = FirebaseFirestore.instance
+        .collection('students')
+        .limit(200)
+        .snapshots();
+  }
 
-  Color _statusColor(String status) {
-    switch (status) {
-      case 'Verified':
-        return const Color(0xFF10B981);
-      case 'Rejected':
-        return const Color(0xFFEF4444);
-      case 'Pending':
-        return const Color(0xFFF59E0B);
-      default:
-        return const Color(0xFF6B7280);
-    }
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _generation++;
+      _studentsStream = FirebaseFirestore.instance
+          .collection('students')
+          .limit(200)
+          .snapshots();
+    });
+    try {
+      await _studentsStream.first.timeout(const Duration(seconds: 15));
+    } catch (_) {}
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Document Management',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+    return AppScaffold(
+      title: 'Documents',
+      actions: [
+        IconButton(
+          tooltip: 'Refresh',
+          icon: const Icon(Icons.refresh, color: AppTheme.bgLight),
+          onPressed: _refresh,
         ),
-        centerTitle: true,
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-            ),
-          ),
-        ),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(
-              _isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
-              color: Colors.white,
-            ),
-            onPressed: widget.toggleDarkMode,
-          ),
-        ],
-      ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: _isDarkMode
-                ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
-        ),
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16),
+        const ThemeToggleButton(color: AppTheme.bgLight),
+      ],
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: AppCard(
+              padding: EdgeInsets.zero,
+              elevation: 0,
               child: TextField(
-                onChanged: (v) => setState(() => _searchQuery = v.toLowerCase()),
-                style: TextStyle(
-                  color: _isDarkMode ? Colors.white : Colors.black,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'Search students...',
-                  hintStyle: TextStyle(
-                    color: _isDarkMode
-                        ? const Color(0xFFB0C4DE)
-                        : const Color(0xFF6B7280),
-                  ),
-                  prefixIcon: Icon(
-                    Icons.search,
-                    color: _isDarkMode
-                        ? const Color(0xFFB0C4DE)
-                        : const Color(0xFF415A77),
-                  ),
-                  filled: true,
-                  fillColor: _isDarkMode
-                      ? const Color(0xFF2A3A5A)
-                      : const Color(0xFFF1F5F9),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
+                controller: _searchController,
+                onChanged: (v) => setState(() => _searchQuery = v.trim()),
+                decoration: FormStyles.decoration(
+                  context,
+                  hintText: 'Search students…',
+                  prefixIcon: const Icon(Icons.search),
+                ).copyWith(
+                  suffixIcon: _searchQuery.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _searchQuery = '');
+                          },
+                        ),
                 ),
               ),
             ),
-            Expanded(
-              child: StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('students')
-                    .snapshots(),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (snapshot.hasError) {
-                    return Center(child: Text('Error: ${snapshot.error}'));
-                  }
+          ),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              key: ValueKey('students_$_generation'),
+              stream: _studentsStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    !snapshot.hasData) {
+                  return const AppLoading(message: 'Loading students…');
+                }
+                if (snapshot.hasError) {
+                  return AppEmptyState.error(
+                    title: 'Could not load students',
+                    message: '${snapshot.error}',
+                    onAction: _refresh,
+                  );
+                }
 
-                  final docs = snapshot.data?.docs ?? [];
-                  final filtered = docs.where((d) {
-                    final data = d.data() as Map<String, dynamic>;
-                    final name =
-                        '${data['firstName'] ?? ''} ${data['lastName'] ?? ''}'
-                            .toLowerCase();
-                    final email = (data['email'] ?? '').toLowerCase();
-                    return _searchQuery.isEmpty ||
-                        name.contains(_searchQuery) ||
-                        email.contains(_searchQuery);
-                  }).toList();
+                final docs = snapshot.data?.docs ?? [];
+                final q = _searchQuery.toLowerCase();
+                final filtered = docs.where((d) {
+                  final data = d.data() as Map<String, dynamic>;
+                  final name =
+                      '${data['firstName'] ?? ''} ${data['lastName'] ?? ''}'
+                          .toLowerCase();
+                  final email = (data['email'] ?? '').toString().toLowerCase();
+                  return q.isEmpty || name.contains(q) || email.contains(q);
+                }).toList();
 
-                  if (filtered.isEmpty) {
-                    return Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.person_search,
-                              size: 64,
-                              color: _isDarkMode
-                                  ? const Color(0xFFB0C4DE).withOpacity(0.4)
-                                  : const Color(0xFF415A77).withOpacity(0.3)),
-                          const SizedBox(height: 12),
-                          Text(
-                            'No students found',
-                            style: TextStyle(
-                              color: _isDarkMode
-                                  ? Colors.white
-                                  : const Color(0xFF1B263B),
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
+                if (filtered.isEmpty) {
+                  return RefreshIndicator(
+                    onRefresh: _refresh,
+                    color: AppTheme.primaryMid,
+                    child: ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        const SizedBox(height: 64),
+                        AppEmptyState(
+                          icon: Icons.person_search,
+                          title: 'No students found',
+                          message: q.isEmpty
+                              ? 'Students appear after sign-up and profile setup.'
+                              : 'Try another search. Pull to refresh.',
+                        ),
+                      ],
+                    ),
+                  );
+                }
 
-                  return ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                return RefreshIndicator(
+                  onRefresh: _refresh,
+                  color: AppTheme.primaryMid,
+                  child: ListView.separated(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
                     itemCount: filtered.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
                     itemBuilder: (context, i) {
                       final data =
                           filtered[i].data() as Map<String, dynamic>;
                       final uid = filtered[i].id;
-                      final firstName = data['firstName'] ?? '';
-                      final lastName = data['lastName'] ?? '';
-                      final email = data['email'] ?? '';
+                      final first = (data['firstName'] ?? '').toString();
+                      final last = (data['lastName'] ?? '').toString();
+                      final name = ('$first $last').trim().isEmpty
+                          ? 'Student'
+                          : ('$first $last').trim();
+                      final email = (data['email'] ?? '').toString();
 
-                      return Card(
-                        color: _isDarkMode
-                            ? const Color(0xFF2A3A5A)
-                            : Colors.white,
-                        elevation: 2,
-                        margin: const EdgeInsets.only(bottom: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                      return AppCard(
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
                         ),
-                        child: ExpansionTile(
-                          leading: CircleAvatar(
-                            backgroundColor:
-                                const Color(0xFF415A77).withOpacity(0.2),
-                            child: const Icon(Icons.person,
-                                color: Color(0xFF415A77)),
+                        child: Theme(
+                          data: Theme.of(context).copyWith(
+                            dividerColor: Colors.transparent,
                           ),
-                          title: Text(
-                            firstName.isEmpty && lastName.isEmpty
-                                ? 'Unknown'
-                                : '$firstName $lastName',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: _isDarkMode
-                                  ? Colors.white
-                                  : const Color(0xFF1B263B),
+                          child: ExpansionTile(
+                            tilePadding:
+                                const EdgeInsets.symmetric(horizontal: 12),
+                            childrenPadding:
+                                const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                            shape: const Border(),
+                            collapsedShape: const Border(),
+                            leading: CircleAvatar(
+                              backgroundColor:
+                                  AppTheme.primaryMid.withValues(alpha: 0.15),
+                              child: Text(
+                                name[0].toUpperCase(),
+                                style: const TextStyle(
+                                  color: AppTheme.primaryMid,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ),
-                          ),
-                          subtitle: Text(
-                            email,
-                            style: TextStyle(
-                              color: _isDarkMode
-                                  ? const Color(0xFFB0C4DE)
-                                  : const Color(0xFF6B7280),
+                            title: Text(
+                              name,
+                              style: const TextStyle(fontWeight: FontWeight.w700),
                             ),
+                            subtitle: email.isEmpty
+                                ? null
+                                : Text(
+                                    email,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Theme.of(context).brightness ==
+                                              Brightness.dark
+                                          ? AppTheme.accentBlue
+                                          : AppTheme.textMuted,
+                                    ),
+                                  ),
+                            children: AppConstants.documentTypes
+                                .map(
+                                  (docType) => _DocStatusRow(
+                                    uid: uid,
+                                    documentType: docType,
+                                  ),
+                                )
+                                .toList(),
                           ),
-                          children: _documentTypes.map((docType) {
-                            return _buildDocStatusRow(uid, docType);
-                          }).toList(),
                         ),
                       );
                     },
-                  );
-                },
-              ),
+                  ),
+                );
+              },
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
+}
 
-  Widget _buildDocStatusRow(String uid, String docType) {
-    final docKey = docType.toLowerCase().replaceAll(' ', '_');
-    return StreamBuilder<QuerySnapshot>(
+/// One stream per expanded row only — parent status first (cheap).
+class _DocStatusRow extends StatelessWidget {
+  final String uid;
+  final String documentType;
+
+  const _DocStatusRow({
+    required this.uid,
+    required this.documentType,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final key = AppConstants.documentTypeKey(documentType);
+    return StreamBuilder<DocumentSnapshot>(
       stream: FirebaseFirestore.instance
           .collection('students')
           .doc(uid)
           .collection('documents')
-          .doc(docKey)
-          .collection('uploads')
-          .orderBy('submittedAt', descending: true)
-          .limit(1)
+          .doc(key)
           .snapshots(),
       builder: (context, snap) {
-        String status = 'Not Submitted';
-        if (snap.hasData && snap.data!.docs.isNotEmpty) {
-          final docData =
-              snap.data!.docs.first.data() as Map<String, dynamic>;
-          status = docData['status'] ?? 'Pending';
-        }
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-          child: Row(
-            children: [
-              Icon(_docIcon(docType),
-                  size: 18, color: const Color(0xFF415A77)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  docType,
-                  style: TextStyle(
-                    color: _isDarkMode
-                        ? Colors.white70
-                        : const Color(0xFF1B263B),
-                  ),
-                ),
-              ),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: _statusColor(status).withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  status,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: _statusColor(status),
-                  ),
-                ),
-              ),
-            ],
+        final data = snap.data?.data() as Map<String, dynamic>?;
+        final status = (data?['status'] as String?) ?? 'Not Submitted';
+        final latestId = data?['latestUploadId'] as String?;
+
+        return ListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            documentType.toLowerCase().contains('aadhar')
+                ? Icons.credit_card
+                : documentType.toLowerCase().contains('voter')
+                    ? Icons.how_to_vote
+                    : Icons.school_outlined,
+            color: AppTheme.primaryMid,
+            size: 22,
           ),
+          title: Text(documentType),
+          trailing: StatusBadge(status: status, fontSize: 11),
+          onTap: latestId == null || status == 'Not Submitted'
+              ? null
+              : () => openSubmissionByIds(
+                    context,
+                    userId: uid,
+                    documentType: documentType,
+                    uploadId: latestId,
+                  ),
         );
       },
     );
-  }
-
-  IconData _docIcon(String docType) {
-    switch (docType.toLowerCase()) {
-      case 'aadhar card':
-        return Icons.credit_card;
-      case 'voter id':
-        return Icons.how_to_vote;
-      default:
-        return Icons.school;
-    }
   }
 }

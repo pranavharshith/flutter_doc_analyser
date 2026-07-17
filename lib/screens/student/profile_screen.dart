@@ -3,128 +3,228 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:fluttertoast/fluttertoast.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:intl_phone_field/intl_phone_field.dart';
 import '/utils/profile_image_notifier.dart';
-import '/services/storage_service.dart'; // FIX: upload to Firebase Storage
+import '/services/storage_service.dart';
+import '/widgets/theme_toggle_button.dart';
+import '/widgets/profile_image_widget.dart';
+import '/ui/ui.dart';
+import '/utils/theme.dart';
+import '/utils/name_utils.dart';
+import '/utils/app_snackbar.dart';
 
 class ProfileScreen extends StatefulWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
+  /// When true, used as a dashboard tab (shell owns the app bar).
+  final bool embedded;
 
   const ProfileScreen({
     super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
+    this.embedded = false,
   });
 
   @override
-  _ProfileScreenState createState() => _ProfileScreenState();
+  State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final user = FirebaseAuth.instance.currentUser;
   final ImagePicker _picker = ImagePicker();
   bool _isUploading = false;
-  String? _imagePath;
+  bool _savingName = false;
+  bool _savingPhone = false;
 
-  // Edit mode controllers
   bool _editingPhone = false;
   bool _editingName = false;
   final _phoneController = TextEditingController();
   final _firstNameController = TextEditingController();
   final _lastNameController = TextEditingController();
-  
-  String _selectedCountryCode = '+91'; // Default to India
+
+  String _selectedCountryCode = '+91';
 
   @override
   void initState() {
     super.initState();
-    _loadImagePath();
+    ProfileImageNotifier.init();
   }
 
-  Future<void> _loadImagePath() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() {
-        _imagePath = prefs.getString('profile_image_path_${user!.uid}');
-      });
-    }
-  }
-
-  Future<void> _uploadProfileImage() async {
+  Future<void> _pickAndUpload(ImageSource source) async {
     try {
       final pickedFile = await _picker.pickImage(
-        source: ImageSource.gallery,
+        source: source,
         imageQuality: 80,
+        maxWidth: 1024,
+        maxHeight: 1024,
       );
       if (pickedFile == null) return;
 
       setState(() => _isUploading = true);
 
       final file = File(pickedFile.path);
+      if (!await file.exists()) {
+        if (mounted) {
+          AppSnackBar.error(context, 'Could not read that image. Try another.');
+        }
+        return;
+      }
 
-      // FIX: Upload to Firebase Storage so image persists across reinstalls
+      // Show local preview immediately while upload runs.
+      await ProfileImageNotifier.updateImagePath(pickedFile.path);
+
       final downloadUrl = await StorageService.uploadProfileImage(
         uid: user!.uid,
         file: file,
       );
 
-      // Also save path locally for quick offline access
-      await ProfileImageNotifier.updateImagePath(pickedFile.path);
+      // Use set+merge so missing student docs still get the field.
+      await FirebaseFirestore.instance.collection('students').doc(user!.uid).set(
+        {
+          'profileImageUrl': downloadUrl,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
 
-      // Save the Firebase Storage URL to Firestore for cross-device access
-      await FirebaseFirestore.instance
-          .collection('students')
-          .doc(user!.uid)
-          .update({'profileImageUrl': downloadUrl});
-
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('profile_image_path_${user!.uid}', pickedFile.path);
+      await ProfileImageNotifier.updateFromUpload(
+        localPath: pickedFile.path,
+        downloadUrl: downloadUrl,
+      );
 
       if (mounted) {
-        setState(() => _imagePath = pickedFile.path);
+        AppSnackBar.success(context, 'Profile image updated');
       }
-
-      Fluttertoast.showToast(msg: 'Profile image updated!');
     } catch (e) {
-      Fluttertoast.showToast(msg: 'Error uploading image: $e');
+      debugPrint('Profile image upload failed: $e');
+      if (mounted) {
+        AppSnackBar.error(
+          context,
+          'Could not upload photo. Check Storage rules and try again.',
+        );
+      }
     } finally {
       if (mounted) setState(() => _isUploading = false);
     }
   }
 
-  Future<void> _saveField(String field, String value) async {
-    try {
-      final userRef = FirebaseFirestore.instance.collection('students').doc(user!.uid);
-      await userRef.update({field: value.trim()});
+  Future<void> _showImageSourceSheet() async {
+    if (_isUploading) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Choose from gallery'),
+                minVerticalPadding: 16,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndUpload(ImageSource.gallery);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_camera_outlined),
+                title: const Text('Take a photo'),
+                minVerticalPadding: 16,
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndUpload(ImageSource.camera);
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
-      if (field == 'firstName' || field == 'lastName') {
-        // Fetch current document to get full name
-        final doc = await userRef.get();
-        if (doc.exists) {
-          final data = doc.data()!;
-          final firstName = data['firstName'] ?? '';
-          final lastName = data['lastName'] ?? '';
-          final fullName = '$firstName $lastName'.trim();
-
-          // 1. Update in past submissions in student's documents
-          // Note: The submissions under `students -> documents -> uploads` don't store the name directly,
-          // but they keep the name in the parent document and in adminNotifications.
-          // The admin dashboard fetches the name from the student's root doc! So updating the root doc is actually enough for the dashboard.
-          
-          // However, we should update the name field in the 'users' collection to keep them perfectly synced.
-          await FirebaseFirestore.instance.collection('users').doc(user!.uid).update({
-            'name': fullName,
-          }).catchError((_) {}); // Ignore if field doesn't exist yet
-        }
-      }
-
-      Fluttertoast.showToast(msg: 'Updated successfully');
-    } catch (e) {
-      Fluttertoast.showToast(msg: 'Failed to update: $e');
+  Future<void> _saveName() async {
+    final first = _firstNameController.text.trim();
+    final last = _lastNameController.text.trim();
+    if (first.isEmpty) {
+      AppSnackBar.error(context, 'First name is required');
+      return;
     }
+    setState(() => _savingName = true);
+    try {
+      final nameFields = NameUtils.firestoreNameFields(
+        firstName: first,
+        lastName: last,
+      );
+      await FirebaseFirestore.instance
+          .collection('students')
+          .doc(user!.uid)
+          .update(nameFields);
+      await FirebaseFirestore.instance.collection('users').doc(user!.uid).set(
+        {'name': nameFields['name']},
+        SetOptions(merge: true),
+      );
+      if (mounted) {
+        setState(() => _editingName = false);
+        AppSnackBar.success(context, 'Name updated');
+      }
+    } catch (_) {
+      if (mounted) {
+        AppSnackBar.error(context, 'Could not update name. Please try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _savingName = false);
+    }
+  }
+
+  Future<void> _savePhone() async {
+    final number = _phoneController.text.trim();
+    if (number.isEmpty) {
+      AppSnackBar.error(context, 'Please enter a phone number');
+      return;
+    }
+    if (_selectedCountryCode == '+91' && number.length != 10) {
+      AppSnackBar.error(context, 'Phone must be 10 digits');
+      return;
+    }
+    setState(() => _savingPhone = true);
+    try {
+      final fullPhone = '$_selectedCountryCode$number';
+      await FirebaseFirestore.instance
+          .collection('students')
+          .doc(user!.uid)
+          .update({'phone': fullPhone});
+      if (mounted) {
+        setState(() => _editingPhone = false);
+        AppSnackBar.success(context, 'Phone updated');
+      }
+    } catch (_) {
+      if (mounted) {
+        AppSnackBar.error(context, 'Could not update phone. Please try again.');
+      }
+    } finally {
+      if (mounted) setState(() => _savingPhone = false);
+    }
+  }
+
+  void _beginEditPhone(String phone) {
+    setState(() {
+      _editingPhone = true;
+      if (phone != 'N/A' && phone.startsWith('+')) {
+        if (phone.startsWith('+91')) {
+          _selectedCountryCode = '+91';
+          _phoneController.text = phone.substring(3);
+        } else if (phone.startsWith('+1')) {
+          _selectedCountryCode = '+1';
+          _phoneController.text = phone.substring(2);
+        } else {
+          _selectedCountryCode = '+91';
+          _phoneController.text =
+              phone.replaceAll(RegExp(r'^\+\d+\s?'), '');
+        }
+      } else {
+        _selectedCountryCode = '+91';
+        _phoneController.text = phone == 'N/A' ? '' : phone;
+      }
+    });
   }
 
   @override
@@ -138,503 +238,352 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Profile',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Color(0xFFFFFFFF),
-          ),
-        ),
-        centerTitle: true,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Color(0xFFFFFFFF)),
-          onPressed: () => Navigator.pop(context),
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(
-              isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
-              color: Colors.white,
-            ),
-            onPressed: widget.toggleDarkMode,
-          ),
-        ],
-      ),
-      extendBodyBehindAppBar: true,
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: isDarkMode
-                ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
-        ),
-        // FIX: Use StreamBuilder so profile data stays live and reflects updates
-        child: SafeArea(
-          child: StreamBuilder<DocumentSnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('students')
-                .doc(user!.uid)
-                .snapshots(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return Center(
-                  child: CircularProgressIndicator(
-                    color: isDarkMode
-                        ? const Color(0xFFB0C4DE)
-                        : const Color(0xFF415A77),
-                  ),
-                );
-              }
-              if (snapshot.hasError) {
-                return Center(
-                  child: Text(
-                    'Error loading profile',
-                    style: TextStyle(
-                      color: isDarkMode
-                          ? const Color(0xFFFFFFFF)
-                          : const Color(0xFF1B263B),
-                    ),
-                  ),
-                );
-              }
-              if (!snapshot.hasData || !snapshot.data!.exists) {
-                return Center(
-                  child: Text(
-                    'No profile data found',
-                    style: TextStyle(
-                      color: isDarkMode
-                          ? const Color(0xFFFFFFFF)
-                          : const Color(0xFF1B263B),
-                    ),
-                  ),
-                );
-              }
+    final accent = isDarkMode ? AppTheme.accentBlue : AppTheme.primaryMid;
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final muted = isDarkMode ? AppTheme.accentBlue : AppTheme.textMuted;
 
-              final data = snapshot.data!.data() as Map<String, dynamic>;
-              final firstName = data['firstName'] ?? 'N/A';
-              final lastName = data['lastName'] ?? 'N/A';
-              final email = data['email'] ?? user?.email ?? 'N/A';
-              final phone = data['phone'] ?? 'N/A';
-              final profileImageUrl = data['profileImageUrl'] as String?;
+    final body = StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('students')
+          .doc(user!.uid)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const AppLoading(message: 'Loading profile…');
+        }
+        if (snapshot.hasError) {
+          return AppEmptyState.error(
+            title: 'Error loading profile',
+            message: 'Could not load your profile. Pull to refresh or try again.',
+          );
+        }
+        if (!snapshot.hasData || !snapshot.data!.exists) {
+          return const AppEmptyState(
+            icon: Icons.person_off_outlined,
+            title: 'No profile data found',
+          );
+        }
 
-              return SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 24.0, vertical: 16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    const SizedBox(height: 20),
-                    // ── Profile avatar ──
-                    Stack(
-                      children: [
-                        CircleAvatar(
-                          radius: 60,
-                          backgroundColor: isDarkMode
-                              ? const Color(0xFFB0C4DE).withOpacity(0.2)
-                              : const Color(0xFF415A77).withOpacity(0.2),
-                          backgroundImage: _imagePath != null &&
-                                  File(_imagePath!).existsSync()
-                              ? FileImage(File(_imagePath!))
-                              : profileImageUrl != null
-                                  ? NetworkImage(profileImageUrl)
-                                      as ImageProvider
-                                  : null,
-                          child: (_imagePath == null ||
-                                      !File(_imagePath!).existsSync()) &&
-                                  profileImageUrl == null
-                              ? Icon(
-                                  Icons.person,
-                                  size: 80,
-                                  color: isDarkMode
-                                      ? const Color(0xFFB0C4DE)
-                                      : const Color(0xFF415A77),
-                                )
-                              : null,
-                        ),
-                        Positioned(
-                          bottom: 0,
-                          right: 0,
-                          child: GestureDetector(
-                            onTap: _isUploading ? null : _uploadProfileImage,
-                            child: Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: isDarkMode
-                                    ? const Color(0xFF415A77)
-                                    : const Color(0xFFFFFFFF),
-                                shape: BoxShape.circle,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withOpacity(0.3),
-                                    blurRadius: 5,
-                                  ),
-                                ],
-                              ),
+        final data = snapshot.data!.data() as Map<String, dynamic>;
+        final firstName = data['firstName'] ?? 'N/A';
+        final lastName = data['lastName'] ?? 'N/A';
+        final email = data['email'] ?? user?.email ?? 'N/A';
+        final phone = data['phone'] ?? 'N/A';
+
+        return SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const SizedBox(height: 12),
+              Stack(
+                children: [
+                  const ProfileImageWidget(radius: 60),
+                  Positioned(
+                    bottom: 0,
+                    right: 0,
+                    child: Material(
+                      color: isDarkMode
+                          ? AppTheme.primaryMid
+                          : AppTheme.bgLight,
+                      shape: const CircleBorder(),
+                      elevation: 2,
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: _isUploading ? null : _showImageSourceSheet,
+                        child: Semantics(
+                          button: true,
+                          label: 'Change profile photo',
+                          child: SizedBox(
+                            width: 48,
+                            height: 48,
+                            child: Center(
                               child: _isUploading
                                   ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
+                                      width: 20,
+                                      height: 20,
                                       child: CircularProgressIndicator(
                                         strokeWidth: 2,
-                                        color: Colors.white,
                                       ),
                                     )
                                   : Icon(
-                                      Icons.edit,
+                                      Icons.camera_alt_outlined,
                                       size: 20,
                                       color: isDarkMode
-                                          ? const Color(0xFFFFFFFF)
-                                          : const Color(0xFF1B263B),
+                                          ? AppTheme.bgLight
+                                          : AppTheme.primaryDark,
                                     ),
                             ),
                           ),
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      '$firstName $lastName',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        color: isDarkMode
-                            ? const Color(0xFFFFFFFF)
-                            : const Color(0xFF1B263B),
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Student Profile',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: isDarkMode
-                            ? const Color(0xFFB0C4DE)
-                            : const Color(0xFF6B7280),
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-
-                    // ── Full Name editable ──
-                    _buildEditableCard(
-                      icon: Icons.person,
-                      title: 'Full Name',
-                      value: '$firstName $lastName',
-                      isDarkMode: isDarkMode,
-                      isEditing: _editingName,
-                      onEditToggle: () {
-                        setState(() {
-                          _editingName = !_editingName;
-                          if (_editingName) {
-                            _firstNameController.text = firstName;
-                            _lastNameController.text = lastName;
-                          }
-                        });
-                      },
-                      editWidget: Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _firstNameController,
-                              decoration: InputDecoration(
-                                hintText: 'First Name',
-                                hintStyle: TextStyle(
-                                    color: isDarkMode
-                                        ? Colors.white38
-                                        : Colors.black38),
-                              ),
-                              style: TextStyle(
-                                  color: isDarkMode
-                                      ? Colors.white
-                                      : Colors.black),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: TextField(
-                              controller: _lastNameController,
-                              decoration: InputDecoration(
-                                hintText: 'Last Name',
-                                hintStyle: TextStyle(
-                                    color: isDarkMode
-                                        ? Colors.white38
-                                        : Colors.black38),
-                              ),
-                              style: TextStyle(
-                                  color: isDarkMode
-                                      ? Colors.white
-                                      : Colors.black),
-                            ),
-                          ),
-                          IconButton(
-                            icon:
-                                const Icon(Icons.check, color: Colors.green),
-                            onPressed: () async {
-                              await _saveField('firstName',
-                                  _firstNameController.text);
-                              await _saveField(
-                                  'lastName', _lastNameController.text);
-                              setState(() => _editingName = false);
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-
-                    // ── Email (read-only) ──
-                    _buildProfileCard(
-                      icon: Icons.email,
-                      title: 'Email',
-                      value: email,
-                      isDarkMode: isDarkMode,
-                    ),
-                    const SizedBox(height: 16),
-
-                    // ── Phone editable ──
-                    _buildEditableCard(
-                      icon: Icons.phone,
-                      title: 'Phone Number',
-                      value: phone,
-                      isDarkMode: isDarkMode,
-                      isEditing: _editingPhone,
-                      onEditToggle: () {
-                        setState(() {
-                          _editingPhone = !_editingPhone;
-                          if (_editingPhone) {
-                            if (phone != 'N/A' && phone.startsWith('+')) {
-                              // Rough heuristic for initializing country code
-                              if (phone.startsWith('+91')) {
-                                _selectedCountryCode = '+91';
-                                _phoneController.text = phone.substring(3);
-                              } else if (phone.startsWith('+1')) {
-                                _selectedCountryCode = '+1';
-                                _phoneController.text = phone.substring(2);
-                              } else {
-                                _selectedCountryCode = '+91'; // default fallback
-                                _phoneController.text = phone.replaceAll(RegExp(r'^\+\d+\s?'), '');
-                              }
-                            } else {
-                              _selectedCountryCode = '+91';
-                              _phoneController.text = phone == 'N/A' ? '' : phone;
-                            }
-                          }
-                        });
-                      },
-                      editWidget: Row(
-                        children: [
-                          Expanded(
-                            child: IntlPhoneField(
-                              controller: _phoneController,
-                              style: TextStyle( color: isDarkMode ? Colors.white : Colors.black ),
-                              decoration: InputDecoration(
-                                hintText: 'Phone Number',
-                                hintStyle: TextStyle(
-                                  color: isDarkMode ? Colors.white38 : Colors.black38,
-                                ),
-                              ),
-                              initialCountryCode: 'IN', // Default to India
-                              onChanged: (phone) {
-                                setState(() {
-                                  _selectedCountryCode = phone.countryCode;
-                                });
-                              },
-                              validator: (phone) {
-                                if (phone == null || phone.number.isEmpty) {
-                                  return 'Please enter your phone number';
-                                }
-                                // Validate length based on country code
-                                if (_selectedCountryCode == '+91' && phone.number.length != 10) {
-                                  return 'Must be 10 digits';
-                                }
-                                if (_selectedCountryCode == '+1' && phone.number.length != 10) {
-                                  return 'Must be 10 digits';
-                                }
-                                return null;
-                              },
-                              autovalidateMode: AutovalidateMode.onUserInteraction,
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.check, color: Colors.green),
-                            onPressed: () async {
-                              final fullPhone = '$_selectedCountryCode${_phoneController.text.trim()}';
-                              await _saveField('phone', fullPhone);
-                              setState(() => _editingPhone = false);
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                  ],
-                ),
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildProfileCard({
-    required IconData icon,
-    required String title,
-    required String value,
-    required bool isDarkMode,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: isDarkMode
-            ? const Color(0xFF2A3A5A)
-            : const Color(0xFFFFFFFF).withOpacity(0.9),
-        borderRadius: BorderRadius.circular(10),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(isDarkMode ? 0.3 : 0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Icon(
-            icon,
-            color: isDarkMode
-                ? const Color(0xFFB0C4DE)
-                : const Color(0xFF415A77),
-            size: 28,
-          ),
-          const SizedBox(width: 16),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
               Text(
-                title,
+                NameUtils.composeName(
+                  firstName == 'N/A' ? '' : firstName,
+                  lastName == 'N/A' ? '' : lastName,
+                ).isEmpty
+                    ? 'Student'
+                    : NameUtils.composeName(
+                        firstName == 'N/A' ? '' : firstName,
+                        lastName == 'N/A' ? '' : lastName,
+                      ),
                 style: TextStyle(
-                  fontSize: 14,
-                  color: isDarkMode
-                      ? const Color(0xFFB0C4DE)
-                      : const Color(0xFF6B7280),
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  color: onSurface,
                 ),
               ),
               const SizedBox(height: 4),
               Text(
-                value,
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: isDarkMode
-                      ? const Color(0xFFFFFFFF)
-                      : const Color(0xFF1B263B),
-                ),
+                'Student Profile',
+                style: TextStyle(fontSize: 15, color: muted),
               ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+              const SizedBox(height: 28),
 
-  Widget _buildEditableCard({
-    required IconData icon,
-    required String title,
-    required String value,
-    required bool isDarkMode,
-    required bool isEditing,
-    required VoidCallback onEditToggle,
-    required Widget editWidget,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: isDarkMode
-            ? const Color(0xFF2A3A5A)
-            : const Color(0xFFFFFFFF).withOpacity(0.9),
-        borderRadius: BorderRadius.circular(10),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(isDarkMode ? 0.3 : 0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                icon,
-                color: isDarkMode
-                    ? const Color(0xFFB0C4DE)
-                    : const Color(0xFF415A77),
-                size: 28,
-              ),
-              const SizedBox(width: 16),
-              Expanded(
+              // ── Name ──
+              AppCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      title,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: isDarkMode
-                            ? const Color(0xFFB0C4DE)
-                            : const Color(0xFF6B7280),
-                      ),
+                    Row(
+                      children: [
+                        Icon(Icons.person_outline, color: accent, size: 26),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Full name',
+                            style: TextStyle(fontSize: 14, color: muted),
+                          ),
+                        ),
+                        if (!_editingName)
+                          IconButton(
+                            tooltip: 'Edit name',
+                            constraints: const BoxConstraints(
+                              minWidth: 48,
+                              minHeight: 48,
+                            ),
+                            icon: Icon(Icons.edit_outlined, color: accent),
+                            onPressed: () {
+                              setState(() {
+                                _editingName = true;
+                                _firstNameController.text =
+                                    firstName == 'N/A' ? '' : firstName;
+                                _lastNameController.text =
+                                    lastName == 'N/A' ? '' : lastName;
+                              });
+                            },
+                          ),
+                      ],
                     ),
-                    if (!isEditing)
-                      Text(
-                        value,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: isDarkMode
-                              ? const Color(0xFFFFFFFF)
-                              : const Color(0xFF1B263B),
+                    if (!_editingName)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 38),
+                        child: Text(
+                          '$firstName $lastName',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: onSurface,
+                          ),
+                        ),
+                      )
+                    else ...[
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _firstNameController,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'First name',
                         ),
                       ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _lastNameController,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'Last name',
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _savingName
+                                  ? null
+                                  : () => setState(() => _editingName = false),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: FilledButton(
+                              onPressed: _savingName ? null : _saveName,
+                              child: _savingName
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Text('Save'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
-              IconButton(
-                icon: Icon(
-                  isEditing ? Icons.close : Icons.edit,
-                  size: 18,
-                  color: isDarkMode
-                      ? const Color(0xFFB0C4DE)
-                      : const Color(0xFF415A77),
+              const SizedBox(height: 12),
+
+              // ── Email (read-only) ──
+              AppCard(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.email_outlined, color: accent, size: 26),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Email',
+                            style: TextStyle(fontSize: 14, color: muted),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            email,
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Email is tied to your account and cannot be '
+                            'changed here. Contact support if you need to update it.',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-                onPressed: onEditToggle,
               ),
+              const SizedBox(height: 12),
+
+              // ── Phone ──
+              AppCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.phone_outlined, color: accent, size: 26),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Phone number',
+                            style: TextStyle(fontSize: 14, color: muted),
+                          ),
+                        ),
+                        if (!_editingPhone)
+                          IconButton(
+                            tooltip: 'Edit phone',
+                            constraints: const BoxConstraints(
+                              minWidth: 48,
+                              minHeight: 48,
+                            ),
+                            icon: Icon(Icons.edit_outlined, color: accent),
+                            onPressed: () => _beginEditPhone(phone),
+                          ),
+                      ],
+                    ),
+                    if (!_editingPhone)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 38),
+                        child: Text(
+                          phone,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: onSurface,
+                          ),
+                        ),
+                      )
+                    else ...[
+                      const SizedBox(height: 12),
+                      IntlPhoneField(
+                        controller: _phoneController,
+                        style: TextStyle(color: onSurface),
+                        decoration: const InputDecoration(
+                          labelText: 'Phone number',
+                        ),
+                        initialCountryCode: 'IN',
+                        onChanged: (p) {
+                          setState(() => _selectedCountryCode = p.countryCode);
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _savingPhone
+                                  ? null
+                                  : () =>
+                                      setState(() => _editingPhone = false),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: FilledButton(
+                              onPressed: _savingPhone ? null : _savePhone,
+                              child: _savingPhone
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Text('Save'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 32),
             ],
           ),
-          if (isEditing) ...[
-            const SizedBox(height: 12),
-            editWidget,
-          ],
-        ],
-      ),
+        );
+      },
+    );
+
+    if (widget.embedded) {
+      return AppGradientBody(child: body);
+    }
+
+    return AppScaffold(
+      title: 'Profile',
+      actions: const [ThemeToggleButton(color: AppTheme.bgLight)],
+      body: body,
     );
   }
 }

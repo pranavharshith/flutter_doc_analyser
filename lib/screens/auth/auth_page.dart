@@ -3,20 +3,14 @@ import '/screens/auth/sign_in_page.dart';
 import '/screens/auth/sign_up_page.dart';
 
 class AuthPage extends StatefulWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
-
-  const AuthPage({
-    super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
-  });
+  const AuthPage({super.key});
 
   @override
-  _AuthPageState createState() => _AuthPageState();
+  State<AuthPage> createState() => _AuthPageState();
 }
 
-class _AuthPageState extends State<AuthPage> with SingleTickerProviderStateMixin {
+class _AuthPageState extends State<AuthPage>
+    with SingleTickerProviderStateMixin {
   bool isSignIn = true;
   late TabController _tabController;
 
@@ -47,18 +41,12 @@ class _AuthPageState extends State<AuthPage> with SingleTickerProviderStateMixin
               isSignIn = false;
               _tabController.animateTo(1);
             }),
-            toggleDarkMode: widget.toggleDarkMode,
-            isDarkMode: widget.isDarkMode,
-            tabController: _tabController,
-          )
+            tabController: _tabController)
         : SignUpPage(
             onToggle: () => setState(() {
               isSignIn = true;
               _tabController.animateTo(0);
             }),
-            toggleDarkMode: widget.toggleDarkMode,
-            isDarkMode: widget.isDarkMode,
-            tabController: _tabController,
-          );
+            tabController: _tabController);
   }
 }

@@ -1,314 +1,250 @@
-import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
+import '/ui/ui.dart';
+import '/utils/app_snackbar.dart';
+import '/utils/theme.dart';
+import '/widgets/theme_toggle_button.dart';
+import 'open_submission.dart';
 
 class AdminNotificationsScreen extends StatefulWidget {
   const AdminNotificationsScreen({super.key});
 
   @override
-  _AdminNotificationsScreenState createState() =>
+  State<AdminNotificationsScreen> createState() =>
       _AdminNotificationsScreenState();
 }
 
 class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
   final Set<String> _pendingDeleteIds = <String>{};
+  late Stream<QuerySnapshot> _notificationsStream;
+  int _streamGeneration = 0;
+  bool _isRefreshing = false;
 
-  // Stream to fetch unread notifications count for admin
-  Stream<int> _getUnreadNotificationsCount() {
+  @override
+  void initState() {
+    super.initState();
+    _notificationsStream = _createStream();
+  }
+
+  Stream<QuerySnapshot> _createStream() {
     return FirebaseFirestore.instance
         .collection('notifications')
         .doc('admin')
         .collection('adminNotifications')
-        .where('isRead', isEqualTo: false)
-        .limit(11)
-        .snapshots()
-        .map((snapshot) => snapshot.docs.length);
+        .orderBy('timestamp', descending: true)
+        .limit(100)
+        .snapshots();
   }
 
-  // Move notification to trash
+  Future<void> _refresh() async {
+    if (_isRefreshing) return;
+    setState(() {
+      _isRefreshing = true;
+      _streamGeneration++;
+      _notificationsStream = _createStream();
+    });
+    try {
+      await _notificationsStream.first.timeout(const Duration(seconds: 15));
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() => _isRefreshing = false);
+    }
+  }
+
   Future<void> _moveToTrash(
     String notificationId,
     Map<String, dynamic> notificationData,
   ) async {
+    setState(() => _pendingDeleteIds.add(notificationId));
     try {
-      if (mounted) {
-        setState(() {
-          _pendingDeleteIds.add(notificationId);
-        });
-      }
-
-      // Add to trash with deletedAt timestamp
       await FirebaseFirestore.instance
           .collection('notifications')
           .doc('admin')
           .collection('trash')
           .doc(notificationId)
           .set({
-            ...notificationData,
-            'deletedAt': FieldValue.serverTimestamp(),
-          });
-
-      // Delete from adminNotifications
+        ...notificationData,
+        'deletedAt': FieldValue.serverTimestamp(),
+      });
       await FirebaseFirestore.instance
           .collection('notifications')
           .doc('admin')
           .collection('adminNotifications')
           .doc(notificationId)
           .delete();
-
       if (mounted) {
-        setState(() {
-          _pendingDeleteIds.remove(notificationId);
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Notification moved to trash')),
-        );
+        setState(() => _pendingDeleteIds.remove(notificationId));
+        AppSnackBar.success(context, 'Moved to trash');
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _pendingDeleteIds.remove(notificationId);
-        });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error moving to trash: $e')));
+        setState(() => _pendingDeleteIds.remove(notificationId));
+        AppSnackBar.error(context, 'Could not move to trash');
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      return const Scaffold(body: Center(child: Text('User not logged in')));
+      return const AppScaffold(
+        title: 'Notifications',
+        body: AppEmptyState(
+          icon: Icons.lock_outline,
+          title: 'Not signed in',
+          message: 'Sign in as admin to view notifications.',
+        ),
+      );
     }
 
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors:
-                isDarkMode
-                    ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                    : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
+    return AppScaffold(
+      title: 'Notifications',
+      actions: [
+        IconButton(
+          tooltip: 'Refresh',
+          onPressed: _isRefreshing ? null : _refresh,
+          icon: _isRefreshing
+              ? const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppTheme.bgLight,
+                  ),
+                )
+              : const Icon(Icons.refresh, color: AppTheme.bgLight),
         ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _buildAppBar(),
-              Expanded(
-                child: StreamBuilder<QuerySnapshot>(
-                  stream:
-                      FirebaseFirestore.instance
-                          .collection('notifications')
-                          .doc('admin')
-                          .collection('adminNotifications')
-                          .orderBy('timestamp', descending: true)
-                          .limit(100)
-                          .snapshots(),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-                    if (snapshot.hasError) {
-                      return Center(child: Text('Error: ${snapshot.error}'));
-                    }
-                    if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                      return const Center(
-                        child: Text('No notifications found.'),
-                      );
-                    }
+        const ThemeToggleButton(color: AppTheme.bgLight),
+      ],
+      body: StreamBuilder<QuerySnapshot>(
+        key: ValueKey('admin_notifs_$_streamGeneration'),
+        stream: _notificationsStream,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting &&
+              !snapshot.hasData) {
+            return const AppLoading(message: 'Loading…');
+          }
+          if (snapshot.hasError) {
+            return AppEmptyState.error(
+              title: 'Could not load',
+              message: '${snapshot.error}',
+              onAction: _refresh,
+            );
+          }
 
-                    final notifications = snapshot.data!.docs
-                        .where((d) => !_pendingDeleteIds.contains(d.id))
-                        .toList();
+          final docs = (snapshot.data?.docs ?? [])
+              .where((d) => !_pendingDeleteIds.contains(d.id))
+              .toList();
 
-                    Future<void> onRefresh() async {
+          if (docs.isEmpty) {
+            return RefreshIndicator(
+              onRefresh: _refresh,
+              color: AppTheme.primaryMid,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: const [
+                  SizedBox(height: 64),
+                  AppEmptyState(
+                    icon: Icons.notifications_none,
+                    title: 'No notifications',
+                    message:
+                        'New student uploads will show up here. Pull to refresh.',
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return RefreshIndicator(
+            onRefresh: _refresh,
+            color: AppTheme.primaryMid,
+            child: ListView.separated(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
+              itemCount: docs.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                final data = docs[index].data() as Map<String, dynamic>;
+                final id = docs[index].id;
+                final isRead = data['isRead'] == true;
+                final message = data['message'] as String? ?? 'No message';
+                final docType = data['documentType'] as String? ?? '';
+                final ts = data['timestamp'];
+                String timeLabel = '';
+                if (ts is Timestamp) {
+                  final d = ts.toDate().toLocal();
+                  timeLabel =
+                      '${d.day}/${d.month}/${d.year} ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+                }
+
+                return AppCard(
+                  elevation: 0,
+                  padding: EdgeInsets.zero,
+                  color: isRead
+                      ? null
+                      : AppTheme.primaryMid.withValues(alpha: 0.08),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 6,
+                    ),
+                    leading: CircleAvatar(
+                      backgroundColor:
+                          AppTheme.primaryMid.withValues(alpha: 0.15),
+                      child: Icon(
+                        isRead
+                            ? Icons.notifications_none
+                            : Icons.notifications_active,
+                        color: AppTheme.primaryMid,
+                      ),
+                    ),
+                    title: Text(
+                      message,
+                      style: TextStyle(
+                        fontWeight:
+                            isRead ? FontWeight.w500 : FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: Text(
+                      [docType, if (timeLabel.isNotEmpty) timeLabel]
+                          .where((e) => e.isNotEmpty)
+                          .join(' · '),
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline,
+                          color: AppTheme.errorRed),
+                      onPressed: () => _moveToTrash(id, data),
+                    ),
+                    onTap: () async {
                       await FirebaseFirestore.instance
                           .collection('notifications')
                           .doc('admin')
                           .collection('adminNotifications')
-                          .orderBy('timestamp', descending: true)
-                          .limit(100)
-                          .get();
-                    }
-
-                    return RefreshIndicator(
-                      onRefresh: onRefresh,
-                      color: const Color(0xFF415A77),
-                      child: ListView.builder(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.all(16),
-                        itemCount: notifications.length,
-                        itemBuilder: (context, index) {
-                          final notification =
-                              notifications[index].data() as Map<String, dynamic>;
-                          final notificationId = notifications[index].id;
-                          final isRead = notification['isRead'] ?? false;
-
-                          return Card(
-                            key: ValueKey(notificationId),
-                            color:
-                                isDarkMode
-                                    ? const Color(0xFF2A3A5A)
-                                    : const Color(0xFFFFFFFF),
-                            elevation: 2,
-                            margin: const EdgeInsets.only(bottom: 12),
-                            child: ListTile(
-                              tileColor: isRead
-                                  ? null
-                                  : (isDarkMode
-                                      ? const Color(0xFF1B263B)
-                                      : Colors.blueGrey[50]),
-                              leading: Icon(
-                                Icons.notifications,
-                                color: isRead ? Colors.grey : Colors.blue,
-                              ),
-                              title: Text(
-                                notification['message'] ?? 'No message',
-                                style: TextStyle(
-                                  fontWeight:
-                                      isRead
-                                          ? FontWeight.normal
-                                          : FontWeight.bold,
-                                  color:
-                                      isDarkMode
-                                          ? Colors.white
-                                          : Colors.black,
-                                ),
-                              ),
-                              subtitle: Text(
-                                notification['documentType'] ?? '',
-                                style: TextStyle(
-                                  color:
-                                      isDarkMode
-                                          ? Colors.white70
-                                          : Colors.grey,
-                                ),
-                              ),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    notification['timestamp'] != null
-                                        ? DateTime.fromMillisecondsSinceEpoch(
-                                          notification['timestamp']
-                                              .millisecondsSinceEpoch,
-                                        ).toLocal().toString().split('.')[0]
-                                        : 'Unknown time',
-                                    style: TextStyle(
-                                      color:
-                                          isDarkMode
-                                              ? Colors.white70
-                                              : Colors.grey,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.delete,
-                                      color: Colors.red,
-                                    ),
-                                    onPressed:
-                                        () => _moveToTrash(
-                                          notificationId,
-                                          notification,
-                                        ),
-                                  ),
-                                ],
-                              ),
-                              onTap: () async {
-                                await FirebaseFirestore.instance
-                                    .collection('notifications')
-                                    .doc('admin')
-                                    .collection('adminNotifications')
-                                    .doc(notificationId)
-                                    .update({'isRead': true});
-                              },
-                            ),
-                          );
-                        },
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAppBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back, color: Color(0xFFFFFFFF)),
-                onPressed: () => Navigator.pop(context),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                'ADMIN NOTIFICATIONS',
-                style: TextStyle(
-                  color: Color(0xFFFFFFFF),
-                  fontWeight: FontWeight.bold,
-                  fontSize: 20,
-                  letterSpacing: 1.5,
-                ),
-              ),
-            ],
-          ),
-          StreamBuilder<int>(
-            stream: _getUnreadNotificationsCount(),
-            builder: (context, snapshot) {
-              final unreadCount = snapshot.data ?? 0;
-              return Stack(
-                children: [
-                  const Icon(
-                    Icons.notifications,
-                    color: Colors.white,
-                    size: 24,
+                          .doc(id)
+                          .update({'isRead': true});
+                      final uid = data['userId'] as String? ?? '';
+                      final uploadId = data['uploadId'] as String? ?? '';
+                      final type = data['documentType'] as String? ?? '';
+                      if (uid.isEmpty || uploadId.isEmpty || type.isEmpty) {
+                        return;
+                      }
+                      if (!context.mounted) return;
+                      await openSubmissionByIds(
+                        context,
+                        userId: uid,
+                        documentType: type,
+                        uploadId: uploadId,
+                      );
+                    },
                   ),
-                  if (unreadCount > 0)
-                    Positioned(
-                      right: 0,
-                      top: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: const BoxDecoration(
-                          color: Colors.red,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Text(
-                          unreadCount > 10 ? '10+' : unreadCount.toString(),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              );
-            },
-          ),
-        ],
+                );
+              },
+            ),
+          );
+        },
       ),
     );
   }

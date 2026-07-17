@@ -1,58 +1,54 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import '/providers/theme_controller.dart';
+import '/utils/profile_image_notifier.dart';
+import '/utils/theme.dart';
 
-class ProfileImageWidget extends StatefulWidget {
+/// App-bar / drawer avatar. Listens to [ProfileImageNotifier] (URL preferred).
+class ProfileImageWidget extends StatelessWidget {
   final double radius;
-  final bool isDarkMode;
 
   const ProfileImageWidget({
     super.key,
     required this.radius,
-    required this.isDarkMode,
   });
 
-  @override
-  _ProfileImageWidgetState createState() => _ProfileImageWidgetState();
-}
-
-class _ProfileImageWidgetState extends State<ProfileImageWidget> {
-  final user = FirebaseAuth.instance.currentUser;
-  String? _imagePath;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadImagePath();
-  }
-
-  Future<void> _loadImagePath() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      _imagePath = prefs.getString('profile_image_path_${user!.uid}');
-    });
+  ImageProvider? _provider(String? ref) {
+    if (ref == null || ref.isEmpty) return null;
+    // Prefer local file when present (instant after pick; works offline).
+    if (!ProfileImageNotifier.isNetworkUrl(ref)) {
+      final file = File(ref);
+      if (file.existsSync()) return FileImage(file);
+      return null;
+    }
+    return NetworkImage(ref);
   }
 
   @override
   Widget build(BuildContext context) {
-    return CircleAvatar(
-      radius: widget.radius,
-      backgroundColor: widget.isDarkMode
-          ? const Color(0xFFB0C4DE).withOpacity(0.2)
-          : const Color(0xFF415A77).withOpacity(0.2),
-      backgroundImage: _imagePath != null && File(_imagePath!).existsSync()
-          ? FileImage(File(_imagePath!))
-          : null,
-      child: _imagePath == null || !File(_imagePath!).existsSync()
-          ? Icon(
-              Icons.person,
-              size: widget.radius * 1.33,
-              color: widget.isDarkMode
-                  ? const Color(0xFFB0C4DE)
-                  : const Color(0xFF415A77),
-            )
-          : null,
+    final isDark = context.isDarkMode;
+    final accent = isDark ? AppTheme.accentBlue : AppTheme.primaryMid;
+
+    return ValueListenableBuilder<String?>(
+      valueListenable: ProfileImageNotifier.imagePath,
+      builder: (context, ref, _) {
+        final image = _provider(ref);
+        return Semantics(
+          label: 'Profile photo',
+          child: CircleAvatar(
+            radius: radius,
+            backgroundColor: accent.withValues(alpha: 0.2),
+            backgroundImage: image,
+            child: image == null
+                ? Icon(
+                    Icons.person,
+                    size: radius * 1.33,
+                    color: accent,
+                  )
+                : null,
+          ),
+        );
+      },
     );
   }
 }

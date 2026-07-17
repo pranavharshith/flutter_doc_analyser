@@ -1,38 +1,30 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
-
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
-
-  <!-- iOS meta tags & icons -->
+  <meta name="description" content="Vortex is a mobile document verification app.">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="my_app">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
-
-  <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
-
-  <title>my_app</title>
+  <title>Vortex</title>
   <link rel="manifest" href="manifest.json">
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      background: #f5f7fa; color: #1b263b; text-align: center; padding: 24px;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 8px; }
+    p { margin: 0; color: #6b7280; max-width: 28rem; line-height: 1.45; }
+  </style>
 </head>
 <body>
+  <!-- Flutter still loads; lib/main.dart shows the same mobile-only empty state. -->
+  <div id="loading">
+    <h1>Vortex</h1>
+    <p>This product is the Android / iOS app. Web is not supported.</p>
+  </div>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

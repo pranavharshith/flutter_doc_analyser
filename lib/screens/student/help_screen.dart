@@ -1,237 +1,145 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '/ui/ui.dart';
+import '/utils/theme.dart';
+import '/utils/app_constants.dart';
+import '/utils/app_snackbar.dart';
 
 class HelpScreen extends StatelessWidget {
-  final bool isDarkMode;
-  const HelpScreen({super.key, required this.isDarkMode});
+  const HelpScreen({super.key});
+
+  Future<void> _launch(BuildContext context, Uri uri) async {
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && context.mounted) {
+        AppSnackBar.error(context, 'Could not open ${uri.scheme} link');
+      }
+    } catch (e) {
+      if (context.mounted) {
+        AppSnackBar.error(context, 'Could not open that link. Please try again.');
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final muted = Theme.of(context).brightness == Brightness.dark
+        ? AppTheme.accentBlue
+        : AppTheme.textMuted;
 
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors:
-                isDarkMode
-                    ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                    : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
-          ),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildAppBar(context),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(horizontal: 8.0),
-                    decoration: BoxDecoration(
-                      color:
-                          isDarkMode
-                              ? const Color(0xFF2A3A5A)
-                              : const Color(0xFFFFFFFF),
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(
-                            isDarkMode ? 0.3 : 0.1,
-                          ),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    child: ListView(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12.0,
-                        vertical: 8.0,
-                      ),
-                      children: [
-                        Text(
-                          "Step-by-Step Guides",
-                          style: Theme.of(
-                            context,
-                          ).textTheme.labelLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color:
-                                isDarkMode
-                                    ? const Color(0xFFFFFFFF)
-                                    : const Color(0xFF6B7280),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        _buildGuideTile(
-                          context,
-                          title: "How to navigate the Dashboard",
-                          content:
-                              "1. Home: View your document upload status.\n2. Notifications: See recent updates.\n3. Documents: Upload required documents.",
-                          isDarkMode: isDarkMode,
-                        ),
-                        _buildGuideTile(
-                          context,
-                          title: "How to upload documents",
-                          content:
-                              "1. Go to 'Documents' page.\n2. Tap on the document you want to upload.\n3. Follow the instructions to complete the upload.",
-                          isDarkMode: isDarkMode,
-                        ),
-                        const SizedBox(height: 24),
-                        Text(
-                          "Contact Support",
-                          style: Theme.of(
-                            context,
-                          ).textTheme.labelLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color:
-                                isDarkMode
-                                    ? const Color(0xFFFFFFFF)
-                                    : const Color(0xFF6B7280),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        _buildSupportTile(
-                          context,
-                          title: "Email Support",
-                          subtitle: "support@example.com",
-                          isDarkMode: isDarkMode,
-                        ),
-                        _buildSupportTile(
-                          context,
-                          title: "Phone Support",
-                          subtitle: "+91 123 456 7890",
-                          isDarkMode: isDarkMode,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAppBar(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return AppScaffold(
+      title: 'Help',
+      body: ListView(
+        padding: const EdgeInsets.all(16),
         children: [
-          Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back, color: Color(0xFFFFFFFF)),
-                onPressed: () => Navigator.pop(context),
-              ),
-              const SizedBox(width: 8),
-              const Text(
-                'HELP',
-                style: TextStyle(
-                  color: Color(0xFFFFFFFF),
+          Text(
+            'Step-by-step guides',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.bold,
-                  fontSize: 28,
-                  letterSpacing: 1.5,
+                  color: muted,
                 ),
+          ),
+          const SizedBox(height: 8),
+          _guide(
+            context,
+            title: 'How to navigate the Dashboard',
+            content:
+                '1. Home — see upload progress and per-document status.\n'
+                '2. Documents — submit required documents.\n'
+                '3. Alerts — verification updates and notifications.\n'
+                '4. Profile — edit name, phone, and photo.',
+          ),
+          _guide(
+            context,
+            title: 'How to upload documents',
+            content:
+                '1. Open the Documents tab.\n'
+                '2. Tap a document type.\n'
+                '3. Enter details (step 1), then upload a clear image (step 2).\n'
+                '4. Review the OCR result (step 3) and wait for admin review if needed.',
+          ),
+          const SizedBox(height: 20),
+          Text(
+            'Contact support',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: muted,
+                ),
+          ),
+          const SizedBox(height: 8),
+          AppCard(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: EdgeInsets.zero,
+            onTap: () => _launch(
+              context,
+              Uri.parse(
+                'mailto:${AppConstants.supportEmail}?subject=Vortex%20support%20request',
               ),
-            ],
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.email_outlined),
+              title: const Text('Email Support'),
+              subtitle: Text(
+                AppConstants.supportEmail,
+                style: TextStyle(color: muted),
+              ),
+              trailing: const Icon(Icons.open_in_new, size: 18),
+            ),
+          ),
+          AppCard(
+            padding: EdgeInsets.zero,
+            onTap: () => _launch(
+              context,
+              Uri(scheme: 'tel', path: AppConstants.supportPhoneTel),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.phone_outlined),
+              title: const Text('Phone Support'),
+              subtitle: Text(
+                AppConstants.supportPhone,
+                style: TextStyle(color: muted),
+              ),
+              trailing: const Icon(Icons.open_in_new, size: 18),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Tap a contact to open your email or phone app. '
+            'You can also reach your institution’s admin team for account issues.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: muted),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildGuideTile(
+  Widget _guide(
     BuildContext context, {
     required String title,
     required String content,
-    required bool isDarkMode,
   }) {
-    return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: ExpansionTile(
-        title: Text(
-          title,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            fontWeight: FontWeight.bold,
-            color:
-                isDarkMode ? const Color(0xFFFFFFFF) : const Color(0xFF1B263B),
-          ),
-        ),
-        trailing: Icon(
-          Icons.expand_more,
-          color: isDarkMode ? const Color(0xFFB0C4DE) : const Color(0xFF415A77),
-          size: 20,
-        ),
-        backgroundColor: Colors.transparent,
-        collapsedBackgroundColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        clipBehavior: Clip.antiAlias,
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Align(
-                  alignment: Alignment.topLeft,
-                  child: Text(
-                    content,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color:
-                          isDarkMode
-                              ? const Color(0xFFFFFFFF)
-                              : const Color(0xFF1B263B),
-                    ),
-                  ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: AppCard(
+        padding: EdgeInsets.zero,
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          title: Text(
+            title,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
                 ),
-              ],
+          ),
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                content,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSupportTile(
-    BuildContext context, {
-    required String title,
-    required String subtitle,
-    required bool isDarkMode,
-  }) {
-    return Card(
-      elevation: 3,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        title: Text(
-          title,
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-            color:
-                isDarkMode ? const Color(0xFFFFFFFF) : const Color(0xFF1B263B),
-          ),
-        ),
-        subtitle: Text(
-          subtitle,
-          style: Theme.of(context).textTheme.labelLarge?.copyWith(
-            color:
-                isDarkMode ? const Color(0xFFB0C4DE) : const Color(0xFF6B7280),
-          ),
+          ],
         ),
       ),
     );

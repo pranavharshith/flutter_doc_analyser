@@ -8,47 +8,60 @@ import '/screens/student/document_upload_screen.dart';
 import '/screens/student/notification_screen.dart';
 import '/screens/student/faq_screen.dart';
 import '/screens/student/help_screen.dart';
-import '/screens/student/trash_screen.dart'; // Corrected import path
+import '/screens/student/trash_screen.dart';
 import '/screens/student/profile_screen.dart';
-import 'package:vortex_dashboard/widgets/profile_image_widget.dart';
+import '/widgets/profile_image_widget.dart';
+import '/providers/theme_controller.dart';
+import '/utils/theme.dart';
+import '/widgets/theme_toggle_button.dart';
+import '/ui/ui.dart';
+import '/ui/dialogs.dart';
+import '/utils/name_utils.dart';
 
+/// Student shell: app bar + drawer + 4-tab bottom navigation.
+///
+/// Tabs: Home · Documents · Notifications · Profile
 class StudentDashboard extends StatefulWidget {
-  final VoidCallback toggleDarkMode;
-  final bool isDarkMode;
-
-  const StudentDashboard({
-    super.key,
-    required this.toggleDarkMode,
-    required this.isDarkMode,
-  });
+  const StudentDashboard({super.key});
 
   @override
-  _StudentDashboardState createState() => _StudentDashboardState();
+  State<StudentDashboard> createState() => _StudentDashboardState();
 }
 
 class _StudentDashboardState extends State<StudentDashboard> {
   int _selectedIndex = 0;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
+  static const _titles = [
+    'Dashboard',
+    'Upload Documents',
+    'Alerts',
+    'Profile',
+  ];
+
+  /// Bumped when returning to Home so progress reloads after uploads.
+  int _homeRefreshToken = 0;
+
   void _onItemTapped(int index) {
     setState(() {
+      if (index == 0 && _selectedIndex != 0) {
+        _homeRefreshToken++;
+      }
       _selectedIndex = index;
     });
   }
 
   Future<void> _signOut() async {
+    final confirmed = await AppDialogs.confirmLogout(context);
+    if (!confirmed || !mounted) return;
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('hasSubmittedDetails');
     await FirebaseAuth.instance.signOut();
     if (!mounted) return;
     Navigator.pushAndRemoveUntil(
       context,
-      MaterialPageRoute(
-        builder: (context) => AuthPage(
-          toggleDarkMode: widget.toggleDarkMode,
-          isDarkMode: widget.isDarkMode,
-        ),
-      ),
+      MaterialPageRoute(builder: (_) => const AuthPage()),
       (route) => false,
     );
   }
@@ -56,21 +69,26 @@ class _StudentDashboardState extends State<StudentDashboard> {
   Widget _getPage(int index) {
     switch (index) {
       case 0:
-        return DashboardContent(onNavigateToUploads: () => _onItemTapped(1));
-      case 1:
-        return DocumentUploadScreen(
-          toggleDarkMode: widget.toggleDarkMode,
-          isDarkMode: widget.isDarkMode,
-          onTabChange: _onItemTapped,
+        return DashboardContent(
+          refreshToken: _homeRefreshToken,
+          onNavigateToUploads: () => _onItemTapped(1),
+          onNavigateToNotifications: () => _onItemTapped(2),
         );
+      case 1:
+        return DocumentUploadScreen(onTabChange: _onItemTapped);
       case 2:
-        return const NotificationsScreen();
+        return const NotificationsScreen(embedded: true);
+      case 3:
+        return const ProfileScreen(embedded: true);
       default:
-        return DashboardContent(onNavigateToUploads: () => _onItemTapped(1));
+        return DashboardContent(
+          refreshToken: _homeRefreshToken,
+          onNavigateToUploads: () => _onItemTapped(1),
+          onNavigateToNotifications: () => _onItemTapped(2),
+        );
     }
   }
 
-  // Stream to fetch unread notifications count for the student
   Stream<int> _getUnreadNotificationsCount() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return Stream.value(0);
@@ -84,182 +102,149 @@ class _StudentDashboardState extends State<StudentDashboard> {
         .map((snapshot) => snapshot.docs.length);
   }
 
+  Stream<Map<String, String?>> _studentIdentityStream() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return Stream.value(const {'name': null, 'email': null});
+    }
+    return FirebaseFirestore.instance
+        .collection('students')
+        .doc(user.uid)
+        .snapshots()
+        .map((snap) {
+      final data = snap.data();
+      final display = NameUtils.displayNameFromMap(data, fallback: '');
+      return {
+        'name': display.isNotEmpty ? display : null,
+        'email': (data?['email'] as String?) ?? user.email,
+      };
+    });
+  }
+
+  void _openRoute(Widget page) {
+    Navigator.pop(context); // close drawer
+    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  }
+
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final isDark = context.isDarkMode;
+
     return Scaffold(
       key: _scaffoldKey,
-      appBar: AppBar(
+      appBar: AppScaffold.buildAppBar(
+        context: context,
+        title: _titles[_selectedIndex],
+        showBackButton: false,
         automaticallyImplyLeading: false,
-        title: Text(
-          _selectedIndex == 0
-              ? "Dashboard"
-              : _selectedIndex == 1
-                  ? "Upload Documents"
-                  : "Notifications",
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Color(0xFFFFFFFF),
-          ),
-        ),
-        centerTitle: true,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-        ),
         leading: IconButton(
-          icon: const Icon(Icons.menu, color: Color(0xFFFFFFFF)),
-          onPressed: () {
-            _scaffoldKey.currentState?.openDrawer();
-          },
+          icon: const Icon(Icons.menu, color: AppTheme.bgLight),
+          tooltip: 'Open menu',
+          constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+          onPressed: () => _scaffoldKey.currentState?.openDrawer(),
         ),
         actions: [
-          IconButton(
-            icon: Icon(
-              isDarkMode ? Icons.nightlight_round : Icons.wb_sunny,
-              color: const Color(0xFFFFFFFF),
-            ),
-            tooltip: "Toggle Theme",
-            onPressed: widget.toggleDarkMode,
-          ),
-          PopupMenuButton<int>(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-            onSelected: (value) {
-              if (value == 1) {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => ProfileScreen(
-                      toggleDarkMode: widget.toggleDarkMode,
-                      isDarkMode: widget.isDarkMode,
-                    ),
-                  ),
-                );
-              } else if (value == 3) {
-                _signOut();
-              }
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 1,
-                child: ListTile(
-                  leading: Icon(
-                    Icons.person,
-                    color: isDarkMode
-                        ? const Color(0xFFB0C4DE)
-                        : const Color(0xFF415A77),
-                  ),
-                  title: Text(
-                    "Profile",
-                    style: TextStyle(
-                      color: isDarkMode
-                          ? const Color(0xFFFFFFFF)
-                          : const Color(0xFF1B263B),
-                    ),
-                  ),
+          const ThemeToggleButton(color: AppTheme.bgLight),
+          // Avatar jumps to Profile tab (no duplicate logout menu).
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Semantics(
+              button: true,
+              label: 'Open profile',
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: () => _onItemTapped(3),
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: ProfileImageWidget(radius: 18),
                 ),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: 3,
-                child: ListTile(
-                  leading: const Icon(
-                    Icons.logout,
-                    color: Color(0xFFEF4444),
-                  ),
-                  title: const Text(
-                    "Sign Out",
-                    style: TextStyle(color: Color(0xFFEF4444)),
-                  ),
-                ),
-              ),
-            ],
-            child: Padding(
-              padding: const EdgeInsets.only(right: 16.0),
-              child: ProfileImageWidget(
-                radius: 20, // Matches the default CircleAvatar size
-                isDarkMode: isDarkMode,
               ),
             ),
           ),
         ],
       ),
       drawer: Drawer(
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.horizontal(right: Radius.circular(16)),
-        ),
         child: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: isDarkMode
-                  ? [const Color(0xFF1B263B), const Color(0xFF0A111F)]
-                  : [const Color(0xFFFFFFFF), const Color(0xFFF5F7FA)],
+              colors: AppTheme.scaffoldGradient(isDark),
             ),
           ),
           child: ListView(
             padding: EdgeInsets.zero,
             children: [
-              DrawerHeader(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Color(0xFF415A77), Color(0xFF1B263B)],
-                  ),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    ProfileImageWidget(
-                      radius: 40, // Larger size for the DrawerHeader
-                      isDarkMode: isDarkMode,
+              // Identity only (not a third Profile entry). Open Profile via
+              // bottom tab or app-bar avatar.
+              StreamBuilder<Map<String, String?>>(
+                stream: _studentIdentityStream(),
+                builder: (context, snapshot) {
+                  final name = snapshot.data?['name'] ?? 'Student';
+                  final email = snapshot.data?['email'] ??
+                      FirebaseAuth.instance.currentUser?.email ??
+                      '';
+                  return DrawerHeader(
+                    margin: EdgeInsets.zero,
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                    decoration: const BoxDecoration(
+                      gradient: AppTheme.appBarGradient,
                     ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      "\ud83d\udcda Menu",
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFFFFFFFF),
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        const ProfileImageWidget(radius: 32),
+                        const SizedBox(height: 12),
+                        Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.bgLight,
+                          ),
+                        ),
+                        if (email.isNotEmpty)
+                          Text(
+                            email,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: AppTheme.bgLight.withValues(alpha: 0.85),
+                            ),
+                          ),
+                      ],
                     ),
-                  ],
-                ),
+                  );
+                },
               ),
-              _drawerItem(Icons.help, "FAQ", () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => FAQScreen(isDarkMode: isDarkMode)),
-                );
-              }, isDarkMode),
-              _drawerItem(Icons.delete_outline, "Trash", () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => TrashScreen(isDarkMode: isDarkMode)),
-                );
-              }, isDarkMode),
-              _drawerItem(Icons.contact_support, "Help", () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => HelpScreen(isDarkMode: isDarkMode)),
-                );
-              }, isDarkMode),
-              const Divider(),
+              _drawerItem(
+                Icons.help_outline,
+                'FAQ',
+                () => _openRoute(const FAQScreen()),
+              ),
+              _drawerItem(
+                Icons.contact_support_outlined,
+                'Help',
+                () => _openRoute(const HelpScreen()),
+              ),
+              _drawerItem(
+                Icons.delete_outline,
+                'Trash',
+                () => _openRoute(const TrashScreen()),
+              ),
+              const Divider(height: 24),
               _drawerItem(
                 Icons.logout,
-                "Logout",
-                _signOut,
-                isDarkMode,
-                color: const Color(0xFFEF4444),
+                'Logout',
+                () {
+                  Navigator.pop(context);
+                  _signOut();
+                },
+                color: AppTheme.errorRed,
               ),
             ],
           ),
@@ -272,41 +257,41 @@ class _StudentDashboardState extends State<StudentDashboard> {
           final unreadCount = snapshot.data ?? 0;
           return BottomNavigationBar(
             currentIndex: _selectedIndex,
-            selectedItemColor: const Color(0xFF415A77),
-            unselectedItemColor: isDarkMode
-                ? const Color(0xFFB0C4DE)
-                : const Color(0xFF6B7280),
-            backgroundColor: isDarkMode
-                ? const Color(0xFF1B263B)
-                : const Color(0xFFF5F7FA),
             onTap: _onItemTapped,
+            type: BottomNavigationBarType.fixed,
             items: [
               const BottomNavigationBarItem(
                 icon: Icon(Icons.home_rounded),
-                label: "Home",
+                label: 'Home',
               ),
               const BottomNavigationBarItem(
                 icon: Icon(Icons.upload_file),
-                label: "Documents",
+                label: 'Documents',
               ),
               BottomNavigationBarItem(
                 icon: Stack(
+                  clipBehavior: Clip.none,
                   children: [
-                    const Icon(Icons.notifications),
+                    const Icon(Icons.notifications_outlined),
                     if (unreadCount > 0)
                       Positioned(
-                        right: 0,
-                        top: 0,
+                        right: -6,
+                        top: -4,
                         child: Container(
-                          padding: const EdgeInsets.all(4),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                            vertical: 2,
+                          ),
                           decoration: const BoxDecoration(
-                            color: Colors.red,
+                            color: AppTheme.errorRed,
                             shape: BoxShape.circle,
                           ),
+                          constraints: const BoxConstraints(minWidth: 16),
                           child: Text(
-                            unreadCount > 10 ? '10+' : unreadCount.toString(),
+                            unreadCount > 10 ? '10+' : '$unreadCount',
+                            textAlign: TextAlign.center,
                             style: const TextStyle(
-                              color: Colors.white,
+                              color: AppTheme.bgLight,
                               fontSize: 10,
                               fontWeight: FontWeight.bold,
                             ),
@@ -315,7 +300,11 @@ class _StudentDashboardState extends State<StudentDashboard> {
                       ),
                   ],
                 ),
-                label: "Notifications",
+                label: 'Alerts',
+              ),
+              const BottomNavigationBarItem(
+                icon: Icon(Icons.person_outline),
+                label: 'Profile',
               ),
             ],
           );
@@ -327,27 +316,18 @@ class _StudentDashboardState extends State<StudentDashboard> {
   ListTile _drawerItem(
     IconData icon,
     String title,
-    VoidCallback onTap,
-    bool isDarkMode, {
-    Color color = Colors.black,
+    VoidCallback onTap, {
+    Color? color,
   }) {
+    final isDark = context.isDarkMode;
+    final effective =
+        color ?? (isDark ? AppTheme.accentBlue : AppTheme.primaryMid);
+    final textColor =
+        color ?? (isDark ? AppTheme.textOnDark : AppTheme.textLight);
+
     return ListTile(
-      leading: Icon(
-        icon,
-        color: color != Colors.black
-            ? color
-            : (isDarkMode ? const Color(0xFFB0C4DE) : const Color(0xFF415A77)),
-      ),
-      title: Text(
-        title,
-        style: TextStyle(
-          color: color != Colors.black
-              ? color
-              : (isDarkMode
-                  ? const Color(0xFFFFFFFF)
-                  : const Color(0xFF1B263B)),
-        ),
-      ),
+      leading: Icon(icon, color: effective),
+      title: Text(title, style: TextStyle(color: textColor)),
       onTap: onTap,
     );
   }
