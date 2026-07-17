@@ -186,6 +186,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
       final name = file.name;
       final lower = name.toLowerCase();
       if (lower.endsWith('.pdf')) {
+        if (!mounted) return;
         AppSnackBar.error(
           context,
           'PDF is not supported for OCR. Please upload a JPG or PNG photo.',
@@ -195,6 +196,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
 
       final path = file.path;
       if (path == null) {
+        if (!mounted) return;
         AppSnackBar.error(context, 'Unable to access that file. Please try again.');
         return;
       }
@@ -353,8 +355,8 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
       bool partialMatch = false;
       String matchedText = '';
 
-      switch (widget.title) {
-        case 'Aadhar Card':
+      switch (AppConstants.normalizeDocumentType(widget.title)) {
+        case AppConstants.docAadhar:
           if (key == 'aadharNumber') {
             final aadharPattern = RegExp(r'\b\d{4}\s?\d{4}\s?\d{4}\b');
             if (aadharPattern.hasMatch(ocrText)) {
@@ -393,7 +395,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
             matchedText = exactMatch ? formattedValue : '';
           }
           break;
-        case 'Voter ID':
+        case AppConstants.docVoterId:
           if (key == 'voterId') {
             // Multi-state EPIC formats via DocumentValidators; fallback loose match.
             final extractedVoterId =
@@ -460,7 +462,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
             }
           }
           break;
-        case '10th Marksheet':
+        case AppConstants.docTenth:
           if (key == 'schoolName' || key == 'medium' || key == 'board') {
             exactMatch = ocrTextLower.contains(formattedValue);
             if (!exactMatch) {
@@ -486,7 +488,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
             matchedText = exactMatch ? formattedValue : '';
           }
           break;
-        case '12th Marksheet':
+        case AppConstants.docTwelfth:
           if (key == 'medium' || key == 'board') {
             exactMatch = ocrTextLower.contains(formattedValue);
             if (!exactMatch) {
@@ -575,10 +577,13 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
           file: imageFile,
         );
       } catch (_) {
-        AppSnackBar.show(
-          context,
-          message: 'File upload incomplete — saving metadata without file URL.',
-        );
+        if (mounted) {
+          AppSnackBar.show(
+            context,
+            message:
+                'File upload incomplete — saving metadata without file URL.',
+          );
+        }
       }
 
       // Profile display name/email (not the form "name on document").
@@ -646,8 +651,8 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
         ...persistedFields,
       };
 
-      switch (widget.title) {
-        case 'Aadhar Card':
+      switch (AppConstants.normalizeDocumentType(widget.title)) {
+        case AppConstants.docAadhar:
           final num = widget.expectedValues['aadharNumber'] ?? '';
           final digits = num.replaceAll(RegExp(r'\D'), '');
           documentData['aadharLast4'] =
@@ -658,7 +663,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
             documentData['documentNumberHash'] = documentData['aadharHash'];
           }
           break;
-        case 'Voter ID':
+        case AppConstants.docVoterId:
           final voterId = verifiedFields['voterId'] ??
               widget.expectedValues['voterId'] ??
               '';
@@ -675,7 +680,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
           documentData['gender'] =
               verifiedFields['gender'] ?? widget.expectedValues['gender'] ?? '';
           break;
-        case '10th Marksheet':
+        case AppConstants.docTenth:
           documentData['schoolName'] = verifiedFields['schoolName'] ??
               widget.expectedValues['schoolName'] ??
               '';
@@ -698,7 +703,7 @@ class _UploadDocumentScreenState extends State<UploadDocumentScreen> {
               widget.expectedValues['examDate'] ??
               '';
           break;
-        case '12th Marksheet':
+        case AppConstants.docTwelfth:
           documentData['medium'] =
               verifiedFields['medium'] ?? widget.expectedValues['medium'] ?? '';
           documentData['board'] =

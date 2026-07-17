@@ -7,6 +7,7 @@ import '/screens/student/forms/twelfth_marksheet_form.dart';
 import '/screens/student/forms/voter_id_form.dart';
 import '/screens/student/reupload_screen.dart';
 import '/ui/ui.dart';
+import '/utils/app_constants.dart';
 import '/utils/theme.dart';
 import '/utils/app_snackbar.dart';
 
@@ -24,10 +25,10 @@ class DocumentUploadScreen extends StatefulWidget {
 
 class _DocumentUploadScreenState extends State<DocumentUploadScreen> {
   final List<Map<String, dynamic>> documents = [
-    {'title': 'Aadhar Card', 'icon': Icons.credit_card},
-    {'title': '10th Marksheet', 'icon': Icons.school},
-    {'title': '12th Marksheet', 'icon': Icons.school_outlined},
-    {'title': 'Voter ID', 'icon': Icons.how_to_vote},
+    {'title': AppConstants.docAadhar, 'icon': Icons.credit_card},
+    {'title': AppConstants.docTenth, 'icon': Icons.school},
+    {'title': AppConstants.docTwelfth, 'icon': Icons.school_outlined},
+    {'title': AppConstants.docVoterId, 'icon': Icons.how_to_vote},
   ];
 
   bool _isLockedStatus(String status, bool parentLocked) {
@@ -79,18 +80,19 @@ class _DocumentUploadScreenState extends State<DocumentUploadScreen> {
   }
 
   void _navigateToForm(String documentTitle) {
+    final title = AppConstants.normalizeDocumentType(documentTitle);
     final Widget form;
-    switch (documentTitle) {
-      case '10th Marksheet':
+    switch (title) {
+      case AppConstants.docTenth:
         form = TenthMarksheetForm(onTabChange: widget.onTabChange);
         break;
-      case '12th Marksheet':
+      case AppConstants.docTwelfth:
         form = TwelfthMarksheetForm(onTabChange: widget.onTabChange);
         break;
-      case 'Voter ID':
+      case AppConstants.docVoterId:
         form = VoterIdForm(onTabChange: widget.onTabChange);
         break;
-      case 'Aadhar Card':
+      case AppConstants.docAadhar:
       default:
         form = AadharCardForm(onTabChange: widget.onTabChange);
         break;

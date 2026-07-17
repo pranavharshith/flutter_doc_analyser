@@ -52,11 +52,11 @@ class Validators {
 
   static String? aadharNumber(String? value) {
     if (value == null || value.trim().isEmpty) {
-      return 'Please enter Aadhar number';
+      return 'Please enter Aadhaar number';
     }
     final digits = value.replaceAll(RegExp(r'\s'), '');
     if (!RegExp(r'^\d{12}$').hasMatch(digits)) {
-      return 'Enter a valid 12-digit Aadhar number';
+      return 'Enter a valid 12-digit Aadhaar number';
     }
     return null;
   }

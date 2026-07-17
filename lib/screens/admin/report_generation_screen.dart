@@ -213,6 +213,7 @@ class _ReportGenerationScreenState extends State<ReportGenerationScreen> {
   IconData _icon(String docType) {
     switch (docType.toLowerCase()) {
       case 'aadhar card':
+      case 'aadhaar card':
         return Icons.credit_card;
       case 'voter id':
         return Icons.how_to_vote;

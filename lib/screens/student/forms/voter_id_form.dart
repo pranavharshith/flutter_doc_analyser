@@ -211,7 +211,7 @@ class _VoterIdFormState extends State<VoterIdForm> {
                 Text('Gender', style: FormStyles.labelText(context)),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
-                  value: _selectedGender,
+                  initialValue: _selectedGender,
                   decoration: FormStyles.decoration(context),
                   dropdownColor: FormStyles.dropdownBg(context),
                   style: fieldStyle,

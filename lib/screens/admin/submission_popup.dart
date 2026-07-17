@@ -35,6 +35,10 @@ class _SubmissionPopupState extends State<SubmissionPopup>
   String? _duplicateSummary;
   bool _dupLoading = false;
 
+  /// Session cache: hash → warning text (or empty string = checked, no dup).
+  /// Avoids re-querying collectionGroup on every reopen (ADM-05).
+  static final Map<String, String> _duplicateCache = {};
+
   @override
   void initState() {
     super.initState();
@@ -46,7 +50,10 @@ class _SubmissionPopupState extends State<SubmissionPopup>
       vsync: this,
       initialIndex: hasImage ? 0 : 1,
     );
-    _loadDuplicates();
+    // Defer so first frame paints before optional network check.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _loadDuplicates();
+    });
   }
 
   @override
@@ -55,11 +62,27 @@ class _SubmissionPopupState extends State<SubmissionPopup>
     super.dispose();
   }
 
-  /// Silent duplicate check — only surface a warning when another student matches.
+  /// Silent duplicate check — Aadhaar / Voter only; cached; no noise when clean.
   Future<void> _loadDuplicates() async {
+    final type = widget.submission.documentType.toLowerCase();
+    final isIdDoc = type.contains('aadhar') ||
+        type.contains('aadhaar') ||
+        type.contains('voter');
+    if (!isIdDoc) return;
+
     final hash = (widget.submission.details['aadharHash'] as String?) ??
         (widget.submission.details['documentNumberHash'] as String?);
     if (hash == null || hash.isEmpty) return;
+
+    final cacheKey = '$hash|${widget.submission.userId}';
+    if (_duplicateCache.containsKey(cacheKey)) {
+      final cached = _duplicateCache[cacheKey]!;
+      setState(() {
+        _duplicateSummary = cached.isEmpty ? null : cached;
+        _dupLoading = false;
+      });
+      return;
+    }
 
     setState(() => _dupLoading = true);
     try {
@@ -78,16 +101,17 @@ class _SubmissionPopupState extends State<SubmissionPopup>
         return uid != widget.submission.userId && d.id != widget.submission.id;
       }).toList();
 
+      final summary = others.isEmpty
+          ? ''
+          : 'Possible duplicate — same document number on ${others.length} other student upload(s).';
+      _duplicateCache[cacheKey] = summary;
+
       if (!mounted) return;
       setState(() {
-        // Don't show technical "hash" language or empty "all clear" noise.
-        _duplicateSummary = others.isEmpty
-            ? null
-            : 'Possible duplicate — same document number on ${others.length} other student upload(s).';
+        _duplicateSummary = summary.isEmpty ? null : summary;
         _dupLoading = false;
       });
     } catch (_) {
-      // Fail quiet — no need to show index/hash errors to reviewers.
       if (!mounted) return;
       setState(() {
         _duplicateSummary = null;

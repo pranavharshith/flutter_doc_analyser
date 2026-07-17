@@ -115,7 +115,7 @@ class _AadharCardFormState extends State<AadharCardForm> {
         context,
         MaterialPageRoute(
           builder: (_) => UploadDocumentScreen(
-            title: 'Aadhar Card',
+            title: AppConstants.docAadhar,
             expectedValues: expectedValues,
             essentialFields: const ['aadharNumber', 'name', 'dob', 'gender'],
           ),
@@ -148,7 +148,7 @@ class _AadharCardFormState extends State<AadharCardForm> {
     final dropdownBg = FormStyles.dropdownBg(context);
 
     return AppScaffold(
-      title: 'Aadhar Details',
+      title: 'Aadhaar Details',
       body: Column(
         children: [
           Expanded(
@@ -161,7 +161,7 @@ class _AadharCardFormState extends State<AadharCardForm> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                 const WizardStepper(currentStep: 0),
-                _buildFieldLabel("Aadhar Number"),
+                _buildFieldLabel("Aadhaar Number"),
                 const SizedBox(height: 8),
                 TextFormField(
                   controller: _aadharController,
@@ -173,15 +173,15 @@ class _AadharCardFormState extends State<AadharCardForm> {
                   ],
                   style: fieldStyle,
                   decoration: _buildInputDecoration(
-                    hintText: "Aadhar Number (XXXX XXXX XXXX)",
+                    hintText: "Aadhaar Number (XXXX XXXX XXXX)",
                   ),
                   validator: (value) {
                     final v = (value ?? '').trim();
                     if (!RegExp(r'^\d{4}\s\d{4}\s\d{4}$').hasMatch(v)) {
-                      return 'Enter Aadhar as XXXX XXXX XXXX';
+                      return 'Enter Aadhaar as XXXX XXXX XXXX';
                     }
                     if (!_isValidAadhar(v)) {
-                      return 'Invalid Aadhar number (check digit failed)';
+                      return 'Invalid Aadhaar number (check digit failed)';
                     }
                     return null;
                   },
@@ -223,7 +223,7 @@ class _AadharCardFormState extends State<AadharCardForm> {
                 _buildFieldLabel("Gender"),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
-                  value: _selectedGender,
+                  initialValue: _selectedGender,
                   decoration: _buildInputDecoration(),
                   dropdownColor: dropdownBg,
                   items: ["Male", "Female", "Other"]
@@ -259,7 +259,7 @@ class _AadharCardFormState extends State<AadharCardForm> {
                 _buildFieldLabel("State"),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
-                  value: _selectedState,
+                  initialValue: _selectedState,
                   decoration: _buildInputDecoration(),
                   dropdownColor: dropdownBg,
                   items: _states

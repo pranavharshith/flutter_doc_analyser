@@ -41,6 +41,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   late Stream<int> _unreadCountStream;
   int _streamGeneration = 0;
 
+  /// Paged live feed: start small, load more on demand (ADM-01).
+  static const int _pageStep = 50;
+  static const int _maxUploadLimit = 500;
+  int _uploadLimit = _pageStep;
+  int _lastRawUploadCount = 0;
+  bool _loadingMore = false;
+
   static const _documentTypes = AppConstants.documentTypes;
 
   @override
@@ -212,12 +219,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     } catch (_) {}
   }
 
-  /// Cap at 200 newest uploads — keeps admin load bounded.
+  /// Newest uploads, page size grows via [load more] (capped at [_maxUploadLimit]).
   Stream<Map<String, List<Submission>>> _createSubmissionsStream() {
     return FirebaseFirestore.instance
         .collectionGroup('uploads')
         .orderBy('submittedAt', descending: true)
-        .limit(200)
+        .limit(_uploadLimit)
         .snapshots()
         .map(_groupSnapshot);
   }
@@ -225,6 +232,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Map<String, List<Submission>> _groupSnapshot(
     QuerySnapshot<Map<String, dynamic>> snapshot,
   ) {
+    _lastRawUploadCount = snapshot.docs.length;
     final Map<String, Map<String, List<Submission>>> byUserType = {};
 
     for (final docSnapshot in snapshot.docs) {
@@ -277,6 +285,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     if (_isRefreshing) return;
     setState(() {
       _isRefreshing = true;
+      _uploadLimit = _pageStep;
       _streamGeneration++;
       _submissionsStream = _createSubmissionsStream();
     });
@@ -295,6 +304,29 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       AppSnackBar.error(context, 'Error refreshing data: $e');
     }
   }
+
+  Future<void> _loadMoreUploads() async {
+    if (_loadingMore) return;
+    if (_uploadLimit >= _maxUploadLimit) return;
+    if (_lastRawUploadCount < _uploadLimit) return;
+
+    setState(() {
+      _loadingMore = true;
+      _uploadLimit =
+          (_uploadLimit + _pageStep).clamp(_pageStep, _maxUploadLimit);
+      _streamGeneration++;
+      _submissionsStream = _createSubmissionsStream();
+    });
+    try {
+      await _submissionsStream.first.timeout(const Duration(seconds: 20));
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  bool get _canLoadMore =>
+      _lastRawUploadCount >= _uploadLimit && _uploadLimit < _maxUploadLimit;
 
   Future<void> _signOut() async {
     final ok = await AppDialogs.confirmLogout(context);
@@ -495,6 +527,44 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                                     setState(() => _selectedSubmission = s),
                               ),
                             ),
+                          if (_canLoadMore) ...[
+                            const SizedBox(height: 12),
+                            Center(
+                              child: _loadingMore
+                                  ? const Padding(
+                                      padding: EdgeInsets.all(12),
+                                      child: SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      ),
+                                    )
+                                  : TextButton.icon(
+                                      onPressed: _loadMoreUploads,
+                                      icon: const Icon(Icons.expand_more),
+                                      label: Text(
+                                        'Load more (showing $_lastRawUploadCount)',
+                                      ),
+                                    ),
+                            ),
+                          ] else if (_lastRawUploadCount > 0) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              _uploadLimit >= _maxUploadLimit
+                                  ? 'Showing newest $_lastRawUploadCount uploads (cap $_maxUploadLimit).'
+                                  : 'Showing all $_lastRawUploadCount recent uploads.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Theme.of(context).brightness ==
+                                        Brightness.dark
+                                    ? AppTheme.accentBlue
+                                    : AppTheme.textMuted,
+                              ),
+                            ),
+                          ],
                         ],
                       );
                     },
@@ -862,6 +932,7 @@ class _DocChip extends StatelessWidget {
   static IconData _iconFor(String documentType) {
     switch (documentType.toLowerCase()) {
       case 'aadhar card':
+      case 'aadhaar card':
         return Icons.credit_card;
       case 'voter id':
         return Icons.how_to_vote;

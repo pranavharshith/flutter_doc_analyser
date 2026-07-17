@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '/ui/ui.dart';
-import 'package:intl/intl.dart';
 import '/screens/student/upload_document_screen.dart';
 
 class TwelfthMarksheetForm extends StatefulWidget {
@@ -13,7 +12,7 @@ class TwelfthMarksheetForm extends StatefulWidget {
   });
 
   @override
-  _TwelfthMarksheetFormState createState() => _TwelfthMarksheetFormState();
+  State<TwelfthMarksheetForm> createState() => _TwelfthMarksheetFormState();
 }
 
 class _TwelfthMarksheetFormState extends State<TwelfthMarksheetForm> {
@@ -57,18 +56,12 @@ class _TwelfthMarksheetFormState extends State<TwelfthMarksheetForm> {
   }
 
   Future<void> _selectMonthYear() async {
-    final now = DateTime.now();
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: now,
-      firstDate: DateTime(2000),
-      lastDate: now,
-      helpText: 'Select Examination Month & Year',
-      fieldLabelText: 'Month/Year',
-      initialEntryMode: DatePickerEntryMode.calendarOnly);
-    if (picked != null) {
-      final formatted = DateFormat('MMMM yyyy').format(picked);
-      _examDateController.text = formatted;
+    final formatted = await showMonthYearPicker(
+      context,
+      helpText: 'Examination month & year',
+    );
+    if (formatted != null && mounted) {
+      setState(() => _examDateController.text = formatted);
     }
   }
 
@@ -155,7 +148,7 @@ class _TwelfthMarksheetFormState extends State<TwelfthMarksheetForm> {
                             DropdownButtonFormField<String>(
                               decoration: _buildInputDecoration(),
                               dropdownColor: FormStyles.dropdownBg(context),
-                              value: _selectedMedium,
+                              initialValue: _selectedMedium,
                               items:
                                   [
                                         "English",
@@ -191,7 +184,7 @@ class _TwelfthMarksheetFormState extends State<TwelfthMarksheetForm> {
                             DropdownButtonFormField<String>(
                               decoration: _buildInputDecoration(),
                               dropdownColor: FormStyles.dropdownBg(context),
-                              value: _selectedBoard,
+                              initialValue: _selectedBoard,
                               items: [
                                 "CBSE",
                                 "Telangana Inter",

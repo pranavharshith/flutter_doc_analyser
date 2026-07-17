@@ -123,8 +123,8 @@ class _ReuploadScreenState extends State<ReuploadScreen> {
       Map<String, String> expected;
       List<String> essential;
 
-      switch (_normalizedTitle) {
-        case 'Aadhar Card':
+      switch (AppConstants.normalizeDocumentType(_normalizedTitle)) {
+        case AppConstants.docAadhar:
           expected = {
             'name': pick('name', fullName),
             'aadharNumber': pick('aadharNumber'),
@@ -135,7 +135,7 @@ class _ReuploadScreenState extends State<ReuploadScreen> {
           };
           essential = ['aadharNumber', 'name', 'dob', 'gender'];
           break;
-        case 'Voter ID':
+        case AppConstants.docVoterId:
           expected = {
             'name': pick('name', fullName),
             'voterId': pick('voterId'),
@@ -145,7 +145,7 @@ class _ReuploadScreenState extends State<ReuploadScreen> {
           };
           essential = ['voterId', 'name'];
           break;
-        case '10th Marksheet':
+        case AppConstants.docTenth:
           expected = {
             'name': pick('name', fullName),
             'schoolName': pick('schoolName'),
@@ -159,7 +159,7 @@ class _ReuploadScreenState extends State<ReuploadScreen> {
           };
           essential = ['hallTicket', 'totalMarks', 'examDate'];
           break;
-        case '12th Marksheet':
+        case AppConstants.docTwelfth:
           expected = {
             'name': pick('name', fullName),
             'medium': pick('medium'),

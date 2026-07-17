@@ -32,8 +32,8 @@ class AppConstants {
   static const String notifTypeReupload = 'reupload';
   static const String notifTypeCompletion = 'completion';
 
-  // Document types
-  static const String docAadhar = 'Aadhar Card';
+  // Document types — display uses correct "Aadhaar"; Firestore key stays aadhar_*.
+  static const String docAadhar = 'Aadhaar Card';
   static const String docVoterId = 'Voter ID';
   static const String docTenth = '10th Marksheet';
   static const String docTwelfth = '12th Marksheet';
@@ -71,12 +71,22 @@ class AppConstants {
     for (final title in documentTypes) {
       if (title.toLowerCase() == t.toLowerCase()) return title;
     }
-    // Common aliases
-    if (lower.contains('aadhar') || lower.contains('aadhaar')) return docAadhar;
+    // Common aliases (legacy "Aadhar Card" → Aadhaar Card)
+    if (lower == 'aadhar_card' ||
+        lower.contains('aadhar') ||
+        lower.contains('aadhaar')) {
+      return docAadhar;
+    }
     if (lower.contains('voter')) return docVoterId;
     if (lower.contains('10') || lower.contains('tenth')) return docTenth;
     if (lower.contains('12') || lower.contains('twelfth')) return docTwelfth;
     return t;
+  }
+
+  /// True when [title] is an Aadhaar document (any spelling).
+  static bool isAadhaarType(String title) {
+    final l = title.toLowerCase();
+    return l.contains('aadhar') || l.contains('aadhaar');
   }
 
   static String documentTypeKey(String titleOrKey) {
